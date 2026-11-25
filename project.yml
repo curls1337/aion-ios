@@ -1,0 +1,51 @@
+name: Aion
+options:
+  bundleIdPrefix: com.aion
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "26.0"
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    INFOPLIST_FILE: Aion/Resources/Info.plist
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+
+targets:
+  Aion:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Aion
+        excludes:
+          - "**/*.md"
+          - "Resources/Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aion.ios
+        PRODUCT_NAME: Aion
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+        SWIFT_EMIT_LOC_STRINGS: YES
+schemes:
+  Aion:
+    build:
+      targets:
+        Aion: all
+    run:
+      config: Debug
+    archive:
+      config: Release
