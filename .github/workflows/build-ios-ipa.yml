@@ -77,13 +77,16 @@ jobs:
           ls -lh Aion-iOS-unsigned.ipa
 
       - name: Sign IPA (Optional — runs only if Apple signing secrets are configured)
-        if: ${{ secrets.P12_BASE64 != '' && secrets.PROVISIONING_PROFILE_BASE64 != '' }}
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'aion-ci-keychain' }}
         run: |
+          if [ -z "$P12_BASE64" ] || [ -z "$PROVISIONING_PROFILE_BASE64" ]; then
+            echo "Skipping code signing (no Apple signing secrets configured)."
+            exit 0
+          fi
           set -e
           mkdir -p build/signing
           echo "$P12_BASE64" | base64 --decode > build/signing/cert.p12
