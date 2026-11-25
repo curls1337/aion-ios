@@ -16,6 +16,18 @@ final class AionStore {
     var cronTasks: [AionCronTask] = []
     var remoteSearchHits: [AionSearchHit] = []
 
+    // Full Web-Parity Remote State
+    var conversationsNextCursor: String?
+    var isLoadingMoreConversations: Bool = false
+    var managedAgents: [AionManagedAgent] = []
+    var providers: [AionProvider] = []
+    var mcpServers: [AionMCPServer] = []
+    var remoteSettings: AionRemoteSettings = AionRemoteSettings()
+    var systemInfo: AionSystemInfo = AionSystemInfo()
+    var pendingConfirmations: [String: [AionConfirmationItem]] = [:]
+    var slashCommandsByConversation: [String: [AionSlashCommand]] = [:]
+    var isUploadingFile: Bool = false
+
     var currentUser: AionUser?
     var isWebSocketConnected: Bool = false
     var isSyncingWorkspace: Bool = false
@@ -210,19 +222,26 @@ final class AionStore {
         isSyncingWorkspace = true
         let config = serverConfig
 
-        async let convTask = try? apiClient.fetchConversations(config: config, limit: 50)
+        async let convTask = try? apiClient.fetchConversationsPage(config: config, cursor: nil, limit: 50)
         async let asstTask = try? apiClient.fetchAssistants(config: config)
         async let skillTask = try? apiClient.fetchSkills(config: config)
         async let cronTask = try? apiClient.fetchCronJobs(config: config)
+        async let agentsTask = try? apiClient.fetchManagedAgents(config: config)
+        async let providersTask = try? apiClient.fetchProviders(config: config)
+        async let mcpTask = try? apiClient.fetchMCPServers(config: config)
+        async let settingsTask = try? apiClient.fetchRemoteSettings(config: config)
+        async let sysTask = try? apiClient.fetchSystemInfo(config: config)
 
-        let (fetchedConvos, fetchedAssistants, fetchedSkills, fetchedCrons) = await (convTask, asstTask, skillTask, cronTask)
+        let (fetchedPage, fetchedAssistants, fetchedSkills, fetchedCrons, fetchedAgents, fetchedProviders, fetchedMCP, fetchedSettings, fetchedSys) = await (
+            convTask, asstTask, skillTask, cronTask, agentsTask, providersTask, mcpTask, settingsTask, sysTask
+        )
 
-        if let fetchedConvos {
-            // Preserve already-loaded message arrays & local UUIDs for matching remoteIDs
+        if let fetchedPage {
+            conversationsNextCursor = fetchedPage.nextCursor
             let existingByRemote = Dictionary(uniqueKeysWithValues: conversations.compactMap { c in
                 c.remoteID.map { ($0, c) }
             })
-            conversations = fetchedConvos.map { remote in
+            conversations = fetchedPage.items.map { remote in
                 if let rid = remote.remoteID, let existing = existingByRemote[rid] {
                     var updated = existing
                     updated.title = remote.title
@@ -252,7 +271,214 @@ final class AionStore {
             persistCronTasks()
         }
 
+        if let fetchedAgents { managedAgents = fetchedAgents }
+        if let fetchedProviders { providers = fetchedProviders }
+        if let fetchedMCP { mcpServers = fetchedMCP }
+        if let fetchedSettings { remoteSettings = fetchedSettings }
+        if let fetchedSys { systemInfo = fetchedSys }
+
         isSyncingWorkspace = false
+    }
+
+    func loadMoreConversations() async {
+        guard serverConfig.mode == .aionWebUI,
+              !isLoadingMoreConversations,
+              let cursor = conversationsNextCursor, !cursor.isEmpty else {
+            return
+        }
+        isLoadingMoreConversations = true
+        if let page = try? await apiClient.fetchConversationsPage(config: serverConfig, cursor: cursor, limit: 50) {
+            conversationsNextCursor = page.nextCursor
+            let existingIDs = Set(conversations.compactMap(\.remoteID))
+            let newOnes = page.items.filter { item in
+                guard let rid = item.remoteID else { return true }
+                return !existingIDs.contains(rid)
+            }
+            conversations.append(contentsOf: newOnes)
+            persistConversations()
+        }
+        isLoadingMoreConversations = false
+    }
+
+    func renameConversation(_ id: UUID, newTitle: String) async {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[idx].title = trimmed
+        persistConversations()
+        if serverConfig.mode == .aionWebUI, let remoteID = conversations[idx].remoteID {
+            try? await apiClient.renameConversation(remoteID: remoteID, newName: trimmed, config: serverConfig)
+        }
+    }
+
+    func resetConversation(_ id: UUID) async {
+        guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[idx].messages = []
+        persistConversations()
+        if serverConfig.mode == .aionWebUI, let remoteID = conversations[idx].remoteID {
+            try? await apiClient.resetConversation(remoteID: remoteID, config: serverConfig)
+            await loadMessagesIfNeeded(for: id, force: true)
+        }
+    }
+
+    // MARK: - Confirmations, Workspace Files, Upload & Slash Commands
+
+    func refreshConversationExtras(for conversationID: UUID) async {
+        guard serverConfig.mode == .aionWebUI,
+              let remoteID = conversation(for: conversationID)?.remoteID else { return }
+        let config = serverConfig
+        async let confTask = try? apiClient.fetchConfirmations(remoteID: remoteID, config: config)
+        async let slashTask = try? apiClient.fetchSlashCommands(remoteID: remoteID, config: config)
+        let (confs, slashes) = await (confTask, slashTask)
+        if let confs { pendingConfirmations[remoteID] = confs }
+        if let slashes { slashCommandsByConversation[remoteID] = slashes }
+    }
+
+    func confirmToolAction(conversationID: UUID, confirmation: AionConfirmationItem, option: AionConfirmationOption) async {
+        guard let remoteID = conversation(for: conversationID)?.remoteID else { return }
+        do {
+            try await apiClient.respondConfirmation(
+                remoteID: remoteID,
+                callID: confirmation.id,
+                msgID: confirmation.msgID,
+                choiceValue: option.id,
+                alwaysAllow: option.isAlwaysAllow,
+                config: serverConfig
+            )
+            pendingConfirmations[remoteID]?.removeAll(where: { $0.id == confirmation.id })
+            AionHaptics.success()
+        } catch {
+            activeErrorBanner = error.localizedDescription
+            AionHaptics.warning()
+        }
+    }
+
+    func uploadLocalFile(url: URL, for conversationID: UUID) async -> AionAttachment? {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let fileName = url.lastPathComponent
+        let sizeLabel = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+
+        guard serverConfig.mode == .aionWebUI else {
+            return AionAttachment(fileName: fileName, sizeLabel: sizeLabel)
+        }
+
+        isUploadingFile = true
+        defer { isUploadingFile = false }
+        let remoteID = conversation(for: conversationID)?.remoteID
+        do {
+            let uploadedPath = try await apiClient.uploadFile(
+                fileData: data,
+                fileName: fileName,
+                mimeType: "application/octet-stream",
+                conversationRemoteID: remoteID,
+                config: serverConfig
+            )
+            AionHaptics.success()
+            return AionAttachment(fileName: fileName, sizeLabel: sizeLabel, remotePath: uploadedPath)
+        } catch {
+            activeErrorBanner = "Upload failed: \(error.localizedDescription)"
+            AionHaptics.warning()
+            return nil
+        }
+    }
+
+    func fetchWorkspaceFiles(for conversationID: UUID, subPath: String = "") async -> [AionWorkspaceFile] {
+        guard serverConfig.mode == .aionWebUI,
+              let remoteID = conversation(for: conversationID)?.remoteID else { return [] }
+        return (try? await apiClient.fetchWorkspaceFiles(remoteID: remoteID, subPath: subPath, config: serverConfig)) ?? []
+    }
+
+    func readWorkspaceFileContent(path: String) async -> String {
+        guard serverConfig.mode == .aionWebUI else { return "" }
+        return (try? await apiClient.readWorkspaceFile(path: path, config: serverConfig)) ?? ""
+    }
+
+    // MARK: - Full Web-Parity Settings Actions
+
+    func toggleAssistant(_ assistant: AionAssistant) async {
+        let next = !assistant.enabled
+        if let idx = assistants.firstIndex(where: { $0.id == assistant.id }) {
+            assistants[idx] = AionAssistant(
+                id: assistant.id,
+                name: assistant.name,
+                description: assistant.description,
+                backend: assistant.backend,
+                avatar: assistant.avatar,
+                enabled: next
+            )
+        }
+        try? await apiClient.setAssistantEnabled(id: assistant.id, enabled: next, config: serverConfig)
+    }
+
+    func loadAssistantRule(_ assistantID: String) async -> String {
+        (try? await apiClient.readAssistantRule(assistantID: assistantID, config: serverConfig)) ?? ""
+    }
+
+    func saveAssistantRule(_ assistantID: String, content: String) async -> Bool {
+        do {
+            try await apiClient.writeAssistantRule(assistantID: assistantID, content: content, config: serverConfig)
+            AionHaptics.success()
+            return true
+        } catch {
+            activeErrorBanner = error.localizedDescription
+            return false
+        }
+    }
+
+    func toggleManagedAgent(_ agent: AionManagedAgent) async {
+        let next = !agent.enabled
+        if let idx = managedAgents.firstIndex(where: { $0.id == agent.id }) {
+            managedAgents[idx].enabled = next
+        }
+        try? await apiClient.setManagedAgentEnabled(id: agent.id, enabled: next, config: serverConfig)
+    }
+
+    func healthCheckAgent(_ agent: AionManagedAgent) async {
+        if let result = try? await apiClient.checkManagedAgentHealth(id: agent.id, config: serverConfig),
+           let idx = managedAgents.firstIndex(where: { $0.id == agent.id }) {
+            managedAgents[idx].healthStatus = result
+            AionHaptics.success()
+        }
+    }
+
+    func toggleMCPServer(_ server: AionMCPServer) async {
+        if let idx = mcpServers.firstIndex(where: { $0.id == server.id }) {
+            mcpServers[idx].enabled.toggle()
+        }
+        try? await apiClient.toggleMCPServer(id: server.id, config: serverConfig)
+    }
+
+    func deleteMCPServer(_ server: AionMCPServer) async {
+        mcpServers.removeAll(where: { $0.id == server.id })
+        try? await apiClient.deleteMCPServer(id: server.id, config: serverConfig)
+    }
+
+    func readSkillDetail(_ skill: AionSkill) async -> String {
+        guard serverConfig.mode == .aionWebUI else { return skill.summary }
+        let detail = (try? await apiClient.readSkillDetail(skillName: skill.id, config: serverConfig)) ?? ""
+        return detail.isEmpty ? skill.summary : detail
+    }
+
+    func rescanSkills() async {
+        guard serverConfig.mode == .aionWebUI else { return }
+        try? await apiClient.rescanSkills(config: serverConfig)
+        if let refreshed = try? await apiClient.fetchSkills(config: serverConfig) {
+            skills = refreshed
+            AionHaptics.success()
+        }
+    }
+
+    func saveRemoteSettings() async {
+        guard serverConfig.mode == .aionWebUI else { return }
+        do {
+            try await apiClient.patchRemoteSettings(remoteSettings, config: serverConfig)
+            AionHaptics.success()
+        } catch {
+            activeErrorBanner = error.localizedDescription
+            AionHaptics.warning()
+        }
     }
 
     func loadMessagesIfNeeded(for conversationID: UUID, force: Bool = false) async {
@@ -358,7 +584,18 @@ final class AionStore {
                 AionHaptics.success()
             }
             if let convo = conversation(forRemoteID: remoteConvoID) {
-                Task { await loadMessagesIfNeeded(for: convo.id, force: true) }
+                Task {
+                    await loadMessagesIfNeeded(for: convo.id, force: true)
+                    await refreshConversationExtras(for: convo.id)
+                }
+            }
+
+        case .conversationListChanged:
+            Task { await syncWorkspace() }
+
+        case .confirmationChanged(let remoteConvoID):
+            if let convo = conversation(forRemoteID: remoteConvoID) {
+                Task { await refreshConversationExtras(for: convo.id) }
             }
 
         case .streamError(let remoteConvoID, let message):

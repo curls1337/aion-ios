@@ -13,6 +13,7 @@ struct SkillsAndTasksView: View {
     let onLaunchConversation: (UUID) -> Void
 
     @State private var isNewCronSheetPresented = false
+    @State private var inspectedSkill: (name: String, content: String)?
     @Namespace private var segmentNamespace
 
     var body: some View {
@@ -32,6 +33,18 @@ struct SkillsAndTasksView: View {
                         } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(AionTheme.inkPrimary)
+                                .frame(width: 40, height: 40)
+                                .aionLiquidGlass(in: Circle(), interactive: true, shadowRadius: 8)
+                        }
+                        .buttonStyle(AionSpringButtonStyle())
+                    } else if store.serverConfig.mode == .aionWebUI {
+                        Button {
+                            AionHaptics.light()
+                            Task { await store.rescanSkills() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(AionTheme.inkPrimary)
                                 .frame(width: 40, height: 40)
                                 .aionLiquidGlass(in: Circle(), interactive: true, shadowRadius: 8)
@@ -94,6 +107,26 @@ struct SkillsAndTasksView: View {
             .presentationDetents([.medium, .large])
             .presentationCornerRadius(28)
         }
+        .sheet(isPresented: Binding(
+            get: { inspectedSkill != nil },
+            set: { if !$0 { inspectedSkill = nil } }
+        )) {
+            if let info = inspectedSkill {
+                NavigationStack {
+                    ScrollView {
+                        AionMarkdownView(text: info.content)
+                            .padding(20)
+                    }
+                    .navigationTitle(info.name)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { inspectedSkill = nil }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Skills Cards
@@ -143,9 +176,20 @@ struct SkillsAndTasksView: View {
                     }
 
                     HStack {
-                        Text(skill.id)
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(AionTheme.inkTertiary)
+                        Button {
+                            Task {
+                                let detail = await store.readSkillDetail(skill)
+                                inspectedSkill = (skill.name, detail)
+                            }
+                        } label: {
+                            Label("Docs", systemImage: "doc.text")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(AionTheme.inkSecondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(AionTheme.surfaceSecondary, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
 
                         Spacer()
 

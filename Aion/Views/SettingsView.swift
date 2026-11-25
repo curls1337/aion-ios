@@ -13,6 +13,9 @@ struct SettingsView: View {
 
                 appearanceCard
                 serverConnectionCard
+                if store.serverConfig.mode == .aionWebUI {
+                    workspaceManagementCard
+                }
                 defaultModelCard
                 aboutCard
             }
@@ -206,6 +209,114 @@ struct SettingsView: View {
         }
         .padding(18)
         .aionBentoCard(fill: AionTheme.surface, cornerRadius: AionTheme.cardRadius)
+    }
+
+    // MARK: - Full AionUi Web Settings Suite
+
+    private var workspaceManagementCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("AionUi Workspace Settings", systemImage: "slider.horizontal.3")
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(AionTheme.inkPrimary)
+
+            NavigationLink {
+                AssistantsManagerView(store: store)
+            } label: {
+                settingsNavRow(
+                    icon: "sparkles",
+                    tint: AionTheme.terracotta,
+                    bg: AionTheme.bentoSand,
+                    title: "Assistants & Rules",
+                    badge: "\(store.assistants.count)"
+                )
+            }
+
+            Divider().overlay(AionTheme.border)
+
+            NavigationLink {
+                ManagedAgentsView(store: store)
+            } label: {
+                settingsNavRow(
+                    icon: "cpu.fill",
+                    tint: AionTheme.forest,
+                    bg: AionTheme.bentoSage,
+                    title: "Managed Agents",
+                    badge: "\(store.managedAgents.count)"
+                )
+            }
+
+            Divider().overlay(AionTheme.border)
+
+            NavigationLink {
+                ProvidersListView(store: store)
+            } label: {
+                settingsNavRow(
+                    icon: "server.rack",
+                    tint: AionTheme.amber,
+                    bg: AionTheme.bentoSand,
+                    title: "Model Providers",
+                    badge: "\(store.providers.count)"
+                )
+            }
+
+            Divider().overlay(AionTheme.border)
+
+            NavigationLink {
+                MCPServersManagerView(store: store)
+            } label: {
+                settingsNavRow(
+                    icon: "puzzlepiece.extension.fill",
+                    tint: AionTheme.lavenderAccent,
+                    bg: AionTheme.bentoLavender,
+                    title: "MCP Servers",
+                    badge: "\(store.mcpServers.count)"
+                )
+            }
+
+            Divider().overlay(AionTheme.border)
+
+            NavigationLink {
+                RemotePreferencesView(store: store)
+            } label: {
+                settingsNavRow(
+                    icon: "gearshape.2.fill",
+                    tint: AionTheme.inkPrimary,
+                    bg: AionTheme.surfaceSecondary,
+                    title: "Server Preferences & Info",
+                    badge: store.systemInfo.version.isEmpty ? "Live" : "v\(store.systemInfo.version)"
+                )
+            }
+        }
+        .padding(18)
+        .aionBentoCard(fill: AionTheme.surface, cornerRadius: AionTheme.cardRadius)
+    }
+
+    private func settingsNavRow(icon: String, tint: Color, bg: Color, title: String, badge: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(bg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            Text(title)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(AionTheme.inkPrimary)
+
+            Spacer()
+
+            Text(badge)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AionTheme.inkSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(AionTheme.surfaceSecondary, in: Capsule())
+
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(AionTheme.inkTertiary)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Default Model Card

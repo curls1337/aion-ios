@@ -12,7 +12,7 @@ struct VoiceModeView: View {
         ZStack {
             AionAmbientCanvas()
 
-            VStack(spacing: 28) {
+            VStack(spacing: 24) {
                 // Top bar
                 HStack {
                     HStack(spacing: 8) {
@@ -57,7 +57,7 @@ struct VoiceModeView: View {
                                 endRadius: 150
                             )
                         )
-                        .frame(width: 260, height: 260)
+                        .frame(width: 250, height: 250)
                         .scaleEffect(speech.isRecording ? (0.95 + speech.audioLevel * 0.45) : (breathe ? 1.08 : 0.94))
                         .animation(
                             .easeInOut(duration: speech.isRecording ? 0.14 : 2.2),
@@ -72,48 +72,52 @@ struct VoiceModeView: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 148, height: 148)
+                        .frame(width: 144, height: 144)
                         .blur(radius: 18)
 
-                    Image(systemName: speech.isRecording ? "waveform" : "mic.fill")
-                        .font(.system(size: 42, weight: .medium))
-                        .foregroundStyle(AionTheme.inkPrimary)
-                        .frame(width: 132, height: 132)
-                        .aionLiquidGlass(
-                            in: Circle(),
-                            tint: speech.isRecording ? AionTheme.terracotta : nil,
-                            interactive: true,
-                            shadowRadius: 20
-                        )
-                        .onTapGesture {
-                            speech.toggleRecording()
-                        }
+                    Button {
+                        speech.toggleRecording()
+                    } label: {
+                        Image(systemName: speech.isRecording ? "waveform" : "mic.fill")
+                            .font(.system(size: 40, weight: .medium))
+                            .foregroundStyle(AionTheme.inkPrimary)
+                            .frame(width: 132, height: 132)
+                            .aionLiquidGlass(
+                                in: Circle(),
+                                tint: speech.isRecording ? AionTheme.terracotta : nil,
+                                interactive: true,
+                                shadowRadius: 20
+                            )
+                    }
+                    .buttonStyle(AionSpringButtonStyle(scale: 0.94))
                 }
 
-                // Live Transcript Glass Card
+                // Editable Live Transcript / Status Card
                 VStack(spacing: 10) {
-                    if let permissionMessage = speech.permissionMessage {
-                        Text(permissionMessage)
-                            .font(.system(size: 14, weight: .medium))
+                    if let statusMessage = speech.statusMessage {
+                        Text(statusMessage)
+                            .font(.system(size: 13.5, weight: .medium))
                             .foregroundStyle(AionTheme.terracotta)
                             .multilineTextAlignment(.center)
-                    } else if speech.transcript.isEmpty {
-                        Text(speech.isRecording ? "Speak naturally — Aion is transcribing..." : "Tap the glass orb to speak with Aion")
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
-                            .foregroundStyle(AionTheme.inkSecondary)
-                            .multilineTextAlignment(.center)
-                    } else {
-                        Text(speech.transcript)
-                            .font(.system(size: 19, weight: .semibold, design: .rounded))
-                            .foregroundStyle(AionTheme.inkPrimary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 14)
-                            .aionLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false, shadowRadius: 10)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(AionTheme.bentoSand.opacity(0.75), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
+
+                    TextField(
+                        speech.isRecording ? "Mendengarkan suara Anda..." : "Ketuk mikrofon atau ketik langsung di sini...",
+                        text: $speech.transcript,
+                        axis: .vertical
+                    )
+                    .font(.system(size: 17, weight: .medium, design: .rounded))
+                    .foregroundStyle(AionTheme.inkPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .aionLiquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false, shadowRadius: 10)
                 }
-                .padding(.horizontal, 26)
-                .frame(minHeight: 84)
+                .padding(.horizontal, 24)
 
                 Spacer()
 
@@ -123,7 +127,7 @@ struct VoiceModeView: View {
                         Button {
                             speech.toggleRecording()
                         } label: {
-                            Label(speech.isRecording ? "Pause" : "Speak", systemImage: speech.isRecording ? "pause.fill" : "mic.fill")
+                            Label(speech.isRecording ? "Stop" : "Speak", systemImage: speech.isRecording ? "stop.fill" : "mic.fill")
                                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                                 .foregroundStyle(AionTheme.inkPrimary)
                                 .padding(.horizontal, 24)
@@ -134,7 +138,7 @@ struct VoiceModeView: View {
 
                         if !speech.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Button {
-                                let finalPrompt = speech.transcript
+                                let finalPrompt = speech.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                                 speech.stopRecording()
                                 AionHaptics.success()
                                 onSubmitTranscript(finalPrompt)

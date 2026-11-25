@@ -10,10 +10,23 @@ struct FluidChatView: View {
     @State private var pendingAttachments: [AionAttachment] = []
     @State private var isFileImporterPresented = false
     @State private var isSkillPickerPresented = false
+    @State private var isWorkspacePresented = false
+    @State private var isRenameAlertPresented = false
+    @State private var renameDraft = ""
     @FocusState private var isComposerFocused: Bool
 
     private var conversation: AionConversation? {
         store.conversation(for: conversationID)
+    }
+
+    private var activeConfirmations: [AionConfirmationItem] {
+        guard let remoteID = conversation?.remoteID else { return [] }
+        return store.pendingConfirmations[remoteID] ?? []
+    }
+
+    private var slashCommands: [AionSlashCommand] {
+        guard let remoteID = conversation?.remoteID else { return [] }
+        return store.slashCommandsByConversation[remoteID] ?? []
     }
 
     private var latestSuggestions: [String] {
@@ -34,6 +47,7 @@ struct FluidChatView: View {
         }
         .task(id: conversationID) {
             await store.loadMessagesIfNeeded(for: conversationID)
+            await store.refreshConversationExtras(for: conversationID)
         }
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -55,11 +69,39 @@ struct FluidChatView: View {
             }
 
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    AionHaptics.light()
-                    store.isVoiceModePresented = true
+                Menu {
+                    Button {
+                        isWorkspacePresented = true
+                    } label: {
+                        Label("Workspace Files", systemImage: "folder")
+                    }
+                    Button {
+                        Task {
+                            await store.loadMessagesIfNeeded(for: conversationID, force: true)
+                            await store.refreshConversationExtras(for: conversationID)
+                        }
+                    } label: {
+                        Label("Sync Messages", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        renameDraft = conversation?.title ?? ""
+                        isRenameAlertPresented = true
+                    } label: {
+                        Label("Rename Thread", systemImage: "pencil")
+                    }
+                    Button {
+                        store.isVoiceModePresented = true
+                    } label: {
+                        Label("Voice Mode", systemImage: "waveform")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        Task { await store.resetConversation(conversationID) }
+                    } label: {
+                        Label("Reset Conversation", systemImage: "arrow.counterclockwise")
+                    }
                 } label: {
-                    Image(systemName: "waveform")
+                    Image(systemName: "ellipsis")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(AionTheme.inkPrimary)
                         .frame(width: 36, height: 36)
@@ -73,14 +115,26 @@ struct FluidChatView: View {
             allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result {
-                for url in urls {
-                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                    let formattedSize = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-                    pendingAttachments.append(
-                        AionAttachment(fileName: url.lastPathComponent, sizeLabel: formattedSize)
-                    )
+                Task {
+                    for url in urls {
+                        if let uploaded = await store.uploadLocalFile(url: url, for: conversationID) {
+                            pendingAttachments.append(uploaded)
+                        }
+                    }
                 }
-                AionHaptics.selection()
+            }
+        }
+        .sheet(isPresented: $isWorkspacePresented) {
+            WorkspaceExplorerSheet(store: store, conversationID: conversationID)
+                .presentationDetents([.medium, .large])
+                .presentationCornerRadius(28)
+        }
+        .alert("Rename Thread", isPresented: $isRenameAlertPresented) {
+            TextField("Title", text: $renameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let title = renameDraft
+                Task { await store.renameConversation(conversationID, newTitle: title) }
             }
         }
         .sheet(isPresented: $isSkillPickerPresented) {
@@ -175,6 +229,20 @@ struct FluidChatView: View {
                         .padding(.top, 60)
                     } else {
                         emptyThreadStarter
+                    }
+
+                    if !activeConfirmations.isEmpty {
+                        ForEach(activeConfirmations) { confirmation in
+                            ConfirmationApprovalCard(confirmation: confirmation) { option in
+                                Task {
+                                    await store.confirmToolAction(
+                                        conversationID: conversationID,
+                                        confirmation: confirmation,
+                                        option: option
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Color.clear
@@ -299,6 +367,40 @@ struct FluidChatView: View {
                     }
                     .padding(.horizontal, 16)
                 }
+            }
+
+            // Slash commands popup when typing "/"
+            if inputText.hasPrefix("/") && !slashCommands.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(slashCommands.filter {
+                            inputText == "/" || $0.name.lowercased().contains(inputText.lowercased())
+                        }) { cmd in
+                            Button {
+                                inputText = "\(cmd.name) "
+                                AionHaptics.selection()
+                            } label: {
+                                Text(cmd.name)
+                                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(AionTheme.terracotta)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .aionLiquidGlass(in: Capsule(), interactive: true, shadowRadius: 6)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+
+            if store.isUploadingFile {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini).tint(AionTheme.terracotta)
+                    Text("Uploading file to Aion workspace...")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AionTheme.inkSecondary)
+                }
+                .padding(.horizontal, 20)
             }
 
             // Quick Follow-up Suggestion Pills (Concept 3 style)
@@ -595,6 +697,55 @@ private struct FileChipView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(AionTheme.border, lineWidth: 0.75)
         )
+    }
+}
+
+private struct ConfirmationApprovalCard: View {
+    let confirmation: AionConfirmationItem
+    let onSelect: (AionConfirmationOption) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .foregroundStyle(AionTheme.amber)
+                Text(confirmation.title)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(AionTheme.inkPrimary)
+            }
+
+            if !confirmation.description.isEmpty {
+                Text(confirmation.description)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(AionTheme.inkSecondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AionTheme.codeBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            HStack(spacing: 8) {
+                ForEach(confirmation.options) { opt in
+                    Button {
+                        onSelect(opt)
+                    } label: {
+                        Text(opt.label)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(opt.isDestructive ? AionTheme.terracotta : .white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .background(
+                                opt.isDestructive
+                                    ? AionTheme.bentoSand
+                                    : (opt.isAlwaysAllow ? AionTheme.forest : AionTheme.terracotta),
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(AionSpringButtonStyle(scale: 0.95))
+                }
+            }
+        }
+        .padding(16)
+        .aionBentoCard(fill: AionTheme.surface, cornerRadius: 20)
     }
 }
 

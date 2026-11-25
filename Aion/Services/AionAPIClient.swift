@@ -34,6 +34,8 @@ enum AionRealtimeEvent: Sendable {
     case thinkingDelta(conversationID: String, msgID: String?, text: String)
     case toolCall(conversationID: String, msgID: String?, callID: String?, name: String, detail: String, status: AionToolCall.Status)
     case turnCompleted(conversationID: String)
+    case conversationListChanged
+    case confirmationChanged(conversationID: String)
     case streamError(conversationID: String, message: String)
     case summaryCard(AionSummaryCard)
     case suggestions([String])
@@ -102,6 +104,73 @@ actor AionAPIClient {
     }
 
     // MARK: - Core AionUi HTTP Bridge (`so()`)
+
+    func requestJSONPublic(
+        method: String,
+        path: String,
+        body: Any? = nil,
+        config: AionServerConfig
+    ) async throws -> Any {
+        try await requestJSON(method: method, path: path, body: body, config: config)
+    }
+
+    func parseConversationPublic(_ dict: [String: Any]) -> AionConversation? {
+        parseConversation(dict)
+    }
+
+    func uploadMultipartFile(
+        fileData: Data,
+        fileName: String,
+        mimeType: String,
+        conversationRemoteID: String?,
+        config: AionServerConfig
+    ) async throws -> String {
+        guard let baseURL = config.normalizedBaseURL else {
+            throw AionAPIError.invalidURL
+        }
+        await ensureCSRFToken(baseURL: baseURL)
+
+        let url = baseURL.appendingPathComponent("api/fs/upload")
+        let boundary = "Boundary-\(UUID().uuidString)"
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let csrf = csrfToken, !csrf.isEmpty {
+            request.setValue(csrf, forHTTPHeaderField: "x-csrf-token")
+        }
+        if !config.apiKey.isEmpty {
+            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        var body = Data()
+        if let conversationRemoteID, !conversationRemoteID.isEmpty {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"conversation_id\"\r\n\r\n".utf8))
+            body.append(Data("\(conversationRemoteID)\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".utf8))
+        body.append(Data("Content-Type: \(mimeType)\r\n\r\n".utf8))
+        body.append(fileData)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+        captureCSRFToken(from: response, baseURL: baseURL)
+
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let msg = String(data: data, encoding: .utf8) ?? "Upload failed"
+            throw AionAPIError.serverError(code, msg)
+        }
+
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let uploadedPath = json["data"] as? String, !uploadedPath.isEmpty {
+            return uploadedPath
+        }
+        throw AionAPIError.decodingFailed
+    }
 
     private func requestJSON(
         method: String,
@@ -706,6 +775,18 @@ actor AionAPIClient {
             return
         }
 
+        if name == "conversation.listChanged" {
+            onEvent(.conversationListChanged)
+            return
+        }
+
+        if name == "confirmation.remove" || name == "confirmation.add" {
+            if let convoID = payload["conversation_id"] as? String {
+                onEvent(.confirmationChanged(conversationID: convoID))
+            }
+            return
+        }
+
         if name == "turn.completed" {
             if let sessionID = (payload["session_id"] as? String) ?? (payload["conversation_id"] as? String) {
                 onEvent(.turnCompleted(conversationID: sessionID))
@@ -744,6 +825,9 @@ actor AionAPIClient {
                         status: tool.status
                     ))
                 }
+
+            case "permission", "ask":
+                onEvent(.confirmationChanged(conversationID: convoID))
 
             case "finish":
                 onEvent(.turnCompleted(conversationID: convoID))

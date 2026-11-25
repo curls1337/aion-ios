@@ -8,6 +8,8 @@ struct BentoDashboardView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var pulseDot = false
+    @State private var renamingConversation: AionConversation?
+    @State private var renameDraft: String = ""
 
     private let gridColumns = [
         GridItem(.flexible(), spacing: 14),
@@ -31,6 +33,20 @@ struct BentoDashboardView: View {
         .onAppear {
             withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
                 pulseDot = true
+            }
+        }
+        .alert("Rename Thread", isPresented: Binding(
+            get: { renamingConversation != nil },
+            set: { if !$0 { renamingConversation = nil } }
+        )) {
+            TextField("Thread title", text: $renameDraft)
+            Button("Cancel", role: .cancel) { renamingConversation = nil }
+            Button("Save") {
+                if let convo = renamingConversation {
+                    let title = renameDraft
+                    renamingConversation = nil
+                    Task { await store.renameConversation(convo.id, newTitle: title) }
+                }
             }
         }
     }
@@ -218,7 +234,7 @@ struct BentoDashboardView: View {
                 .padding(.vertical, 24)
             } else {
                 VStack(spacing: 4) {
-                    ForEach(Array(store.conversations.prefix(8).enumerated()), id: \.element.id) { index, convo in
+                    ForEach(Array(store.conversations.enumerated()), id: \.element.id) { index, convo in
                         Button {
                             AionHaptics.selection()
                             onOpenConversation(convo.id)
@@ -258,6 +274,17 @@ struct BentoDashboardView: View {
                         }
                         .buttonStyle(AionSpringButtonStyle(scale: 0.985))
                         .contextMenu {
+                            Button {
+                                renameDraft = convo.title
+                                renamingConversation = convo
+                            } label: {
+                                Label("Rename Thread", systemImage: "pencil")
+                            }
+                            Button {
+                                Task { await store.resetConversation(convo.id) }
+                            } label: {
+                                Label("Reset Messages", systemImage: "arrow.counterclockwise")
+                            }
                             Button(role: .destructive) {
                                 store.deleteConversation(convo.id)
                             } label: {
@@ -265,10 +292,27 @@ struct BentoDashboardView: View {
                             }
                         }
 
-                        if index < min(store.conversations.count, 8) - 1 {
+                        if index < store.conversations.count - 1 {
                             Divider()
                                 .overlay(AionTheme.border)
                                 .padding(.leading, 56)
+                        }
+                    }
+
+                    if store.conversationsNextCursor != nil {
+                        Button {
+                            Task { await store.loadMoreConversations() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if store.isLoadingMoreConversations {
+                                    ProgressView().controlSize(.small)
+                                }
+                                Text(store.isLoadingMoreConversations ? "Loading..." : "Load Older Threads")
+                                    .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(AionTheme.terracotta)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
                         }
                     }
                 }
