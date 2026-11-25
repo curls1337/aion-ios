@@ -125,8 +125,10 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
     let role: Role
     var content: String
     var thinking: String?
+    var thinkingSubject: String?
     let createdAt: Date
     var toolCalls: [AionToolCall]
+    var planEntries: [AionPlanEntry]
     var summaryCard: AionSummaryCard?
     var attachments: [AionAttachment]
     var followUpSuggestions: [String]
@@ -137,8 +139,10 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
         role: Role,
         content: String,
         thinking: String? = nil,
+        thinkingSubject: String? = nil,
         createdAt: Date = Date(),
         toolCalls: [AionToolCall] = [],
+        planEntries: [AionPlanEntry] = [],
         summaryCard: AionSummaryCard? = nil,
         attachments: [AionAttachment] = [],
         followUpSuggestions: [String] = []
@@ -148,11 +152,79 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
         self.role = role
         self.content = content
         self.thinking = thinking
+        self.thinkingSubject = thinkingSubject
         self.createdAt = createdAt
         self.toolCalls = toolCalls
+        self.planEntries = planEntries
         self.summaryCard = summaryCard
         self.attachments = attachments
         self.followUpSuggestions = followUpSuggestions
+    }
+}
+
+struct AionPlanEntry: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    var title: String
+    var status: String // pending, in_progress, completed
+}
+
+struct AionLiveActivity: Equatable, Sendable {
+    enum Phase: String, Sendable {
+        case starting
+        case thinking
+        case runningTool
+        case writing
+        case waitingApproval
+    }
+
+    var phase: Phase
+    var title: String
+    var detail: String
+    var startedAt: Date
+}
+
+enum AionPermissionMode: String, CaseIterable, Identifiable, Codable, Sendable {
+    case defaultMode = "default"
+    case autoApprove = "auto_edit"
+    case fullAuto = "yolo"
+    case planOnly = "plan"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .defaultMode: return "Default"
+        case .autoApprove: return "Auto Edit"
+        case .fullAuto: return "Full Auto"
+        case .planOnly: return "Plan Only"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .defaultMode: return "shield"
+        case .autoApprove: return "shield.lefthalf.filled"
+        case .fullAuto: return "bolt.shield.fill"
+        case .planOnly: return "list.clipboard"
+        }
+    }
+}
+
+enum AionThoughtLevel: String, CaseIterable, Identifiable, Codable, Sendable {
+    case auto = ""
+    case low = "low"
+    case medium = "medium"
+    case high = "high"
+
+    var id: String { rawValue.isEmpty ? "auto" : rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
     }
 }
 

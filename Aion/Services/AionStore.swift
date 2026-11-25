@@ -51,6 +51,9 @@ final class AionStore {
 
     var isStreaming: Bool = false
     var streamingConversationRemoteID: String?
+    var liveActivityByConversation: [String: AionLiveActivity] = [:]
+    var selectedPermissionMode: AionPermissionMode = .defaultMode
+    var selectedThoughtLevel: AionThoughtLevel = .auto
     var activeErrorBanner: String?
     var isVoiceModePresented: Bool = false
     var selectedSkillForNextPrompt: AionSkill?
@@ -120,6 +123,58 @@ final class AionStore {
             return assistant.name
         }
         return activeModel.displayName
+    }
+
+    /// Resolves raw agent UUID/hash IDs (e.g. `55f3ed1c`, `a9f3c21e`) into clean human-readable agent labels.
+    func cleanAgentLabel(for assistant: AionAssistant) -> String {
+        let raw = assistant.backend.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let matched = managedAgents.first(where: { $0.id == raw || $0.backend == raw }) {
+            return matched.name
+        }
+        // Hide raw 8-char hex hashes or UUIDs from UI
+        let hexChars = CharacterSet(charactersIn: "0123456789abcdefABCDEF-")
+        if raw.isEmpty || raw.lowercased() == "aion" || (raw.count >= 6 && raw.unicodeScalars.allSatisfy { hexChars.contains($0) }) {
+            return ""
+        }
+        return raw.capitalized
+    }
+
+    /// Primary core assistants shown as 1-tap Liquid Glass pills (matches PC Guid bar: Aion CLI, Hermes, Antigravity, Butler).
+    var primaryAssistants: [AionAssistant] {
+        let enabled = assistants.filter(\.enabled)
+        let source = enabled.isEmpty ? assistants : enabled
+        let coreKeywords = ["aion cli", "hermes", "antigravity", "butler", "claude", "codex", "gemini"]
+        let matched = source.filter { asst in
+            let lower = asst.name.lowercased()
+            return coreKeywords.contains(where: { lower.contains($0) })
+        }
+        if !matched.isEmpty {
+            return Array(matched.prefix(5))
+        }
+        return Array(source.prefix(4))
+    }
+
+    var secondaryAssistants: [AionAssistant] {
+        let primaryIDs = Set(primaryAssistants.map(\.id))
+        return assistants.filter { $0.enabled && !primaryIDs.contains($0.id) }
+    }
+
+    func liveActivity(for conversationID: UUID) -> AionLiveActivity? {
+        if let remoteID = conversation(for: conversationID)?.remoteID,
+           let activity = liveActivityByConversation[remoteID] {
+            return activity
+        }
+        if let localActivity = liveActivityByConversation[conversationID.uuidString] {
+            return localActivity
+        }
+        return nil
+    }
+
+    func isConversationGenerating(_ conversation: AionConversation) -> Bool {
+        if let rid = conversation.remoteID, liveActivityByConversation[rid] != nil {
+            return true
+        }
+        return liveActivityByConversation[conversation.id.uuidString] != nil
     }
 
     func conversation(for id: UUID) -> AionConversation? {
@@ -581,11 +636,27 @@ final class AionStore {
         case .wsDisconnected:
             isWebSocketConnected = false
 
+        case .agentStatus(let remoteConvoID, let statusText):
+            let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+            liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                phase: .starting,
+                title: "Agent Status",
+                detail: statusText,
+                startedAt: started
+            )
+
         case .textDelta(let remoteConvoID, let msgID, let text, let replace, let isUser):
             guard !isUser else { return }
             guard let cIdx = ensureConversationIndex(forRemoteID: remoteConvoID) else { return }
             isStreaming = true
             streamingConversationRemoteID = remoteConvoID
+            let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+            liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                phase: .writing,
+                title: "Writing response",
+                detail: "Streaming live...",
+                startedAt: started
+            )
             conversations[cIdx].updatedAt = Date()
 
             if let msgID,
@@ -609,19 +680,48 @@ final class AionStore {
                 )
             }
 
-        case .thinkingDelta(let remoteConvoID, let msgID, let text):
+        case .thinkingDelta(let remoteConvoID, let msgID, let subject, let text, let isDone):
             guard let cIdx = ensureConversationIndex(forRemoteID: remoteConvoID) else { return }
+            isStreaming = true
+            streamingConversationRemoteID = remoteConvoID
+            let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+            let cleanSubject = subject?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let previewLine = text
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !isDone {
+                liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                    phase: .thinking,
+                    title: cleanSubject.isEmpty ? "Thinking..." : cleanSubject,
+                    detail: previewLine.isEmpty ? "Reasoning step by step" : String(previewLine.suffix(90)),
+                    startedAt: started
+                )
+            }
             if let last = conversations[cIdx].messages.last, last.role == .assistant {
                 let mIdx = conversations[cIdx].messages.count - 1
-                conversations[cIdx].messages[mIdx].thinking = (conversations[cIdx].messages[mIdx].thinking ?? "") + text
+                if !cleanSubject.isEmpty {
+                    conversations[cIdx].messages[mIdx].thinkingSubject = cleanSubject
+                }
+                if !text.isEmpty {
+                    conversations[cIdx].messages[mIdx].thinking = (conversations[cIdx].messages[mIdx].thinking ?? "") + text
+                }
             } else {
                 conversations[cIdx].messages.append(
-                    AionMessage(remoteMsgID: msgID, role: .assistant, content: "", thinking: text)
+                    AionMessage(remoteMsgID: msgID, role: .assistant, content: "", thinking: text, thinkingSubject: cleanSubject.isEmpty ? nil : cleanSubject)
                 )
             }
 
         case .toolCall(let remoteConvoID, let msgID, let callID, let name, let detail, let status):
             guard let cIdx = ensureConversationIndex(forRemoteID: remoteConvoID) else { return }
+            isStreaming = true
+            streamingConversationRemoteID = remoteConvoID
+            let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+            liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                phase: .runningTool,
+                title: status == .running ? "Running \(name)" : "Finished \(name)",
+                detail: detail,
+                startedAt: started
+            )
             if conversations[cIdx].messages.last?.role != .assistant {
                 conversations[cIdx].messages.append(AionMessage(remoteMsgID: msgID, role: .assistant, content: ""))
             }
@@ -636,7 +736,28 @@ final class AionStore {
                 )
             }
 
+        case .planUpdate(let remoteConvoID, let msgID, let entries):
+            guard let cIdx = ensureConversationIndex(forRemoteID: remoteConvoID) else { return }
+            if conversations[cIdx].messages.last?.role != .assistant {
+                conversations[cIdx].messages.append(AionMessage(remoteMsgID: msgID, role: .assistant, content: "", planEntries: entries))
+            } else {
+                conversations[cIdx].messages[conversations[cIdx].messages.count - 1].planEntries = entries
+            }
+            if let activeStep = entries.first(where: { $0.status == "in_progress" }) {
+                let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+                liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                    phase: .runningTool,
+                    title: "Working on plan",
+                    detail: activeStep.title,
+                    startedAt: started
+                )
+            }
+
         case .turnCompleted(let remoteConvoID):
+            liveActivityByConversation.removeValue(forKey: remoteConvoID)
+            if let localID = conversation(forRemoteID: remoteConvoID)?.id {
+                liveActivityByConversation.removeValue(forKey: localID.uuidString)
+            }
             if streamingConversationRemoteID == remoteConvoID || streamingConversationRemoteID == nil {
                 isStreaming = false
                 streamingConversationRemoteID = nil
@@ -653,11 +774,19 @@ final class AionStore {
             Task { await syncWorkspace() }
 
         case .confirmationChanged(let remoteConvoID):
+            let started = liveActivityByConversation[remoteConvoID]?.startedAt ?? Date()
+            liveActivityByConversation[remoteConvoID] = AionLiveActivity(
+                phase: .waitingApproval,
+                title: "Approval needed",
+                detail: "Tap Allow or Deny to continue",
+                startedAt: started
+            )
             if let convo = conversation(forRemoteID: remoteConvoID) {
                 Task { await refreshConversationExtras(for: convo.id) }
             }
 
         case .streamError(let remoteConvoID, let message):
+            liveActivityByConversation.removeValue(forKey: remoteConvoID)
             isStreaming = false
             activeErrorBanner = message
             if let cIdx = ensureConversationIndex(forRemoteID: remoteConvoID) {
@@ -751,6 +880,13 @@ final class AionStore {
         let configSnapshot = serverConfig
 
         isStreaming = true
+        let initialKey = moved.remoteID ?? conversationID.uuidString
+        liveActivityByConversation[initialKey] = AionLiveActivity(
+            phase: .starting,
+            title: "Connecting to \(headerAssistantLabel)",
+            detail: "Sending your prompt...",
+            startedAt: Date()
+        )
         persistConversations()
 
         if configSnapshot.mode == .aionWebUI {
@@ -768,6 +904,8 @@ final class AionStore {
                             selectedProviderID: self.selectedProviderID,
                             selectedModelName: self.selectedProviderModel,
                             fallbackProvider: defaultProvider,
+                            permissionMode: self.selectedPermissionMode,
+                            thoughtLevel: self.selectedThoughtLevel,
                             locale: self.remoteSettings.language.isEmpty ? "en-US" : self.remoteSettings.language,
                             config: configSnapshot
                         )
@@ -776,6 +914,15 @@ final class AionStore {
                             self.conversations[idx].remoteID = created.remoteID
                             self.conversations[idx].conversationType = created.conversationType
                             self.conversations[idx].assistantID = chosenAssistant?.id
+                        }
+                        if let rid = created.remoteID {
+                            let existing = self.liveActivityByConversation.removeValue(forKey: conversationID.uuidString)
+                            self.liveActivityByConversation[rid] = existing ?? AionLiveActivity(
+                                phase: .starting,
+                                title: "Starting \(chosenAssistant?.name ?? "Aion")",
+                                detail: "Preparing agent runtime...",
+                                startedAt: Date()
+                            )
                         }
                     }
 
@@ -809,12 +956,21 @@ final class AionStore {
                         await self.loadMessagesIfNeeded(for: conversationID, force: true)
                     }
                 } catch is CancellationError {
+                    self.liveActivityByConversation.removeValue(forKey: conversationID.uuidString)
+                    if let rid = self.conversation(for: conversationID)?.remoteID {
+                        self.liveActivityByConversation.removeValue(forKey: rid)
+                    }
                     self.isStreaming = false
                 } catch AionAPIError.unauthorized {
+                    self.liveActivityByConversation.removeValue(forKey: conversationID.uuidString)
                     self.isStreaming = false
                     self.connectionState = .needsLogin
                     self.isLoginSheetPresented = true
                 } catch {
+                    self.liveActivityByConversation.removeValue(forKey: conversationID.uuidString)
+                    if let rid = self.conversation(for: conversationID)?.remoteID {
+                        self.liveActivityByConversation.removeValue(forKey: rid)
+                    }
                     self.isStreaming = false
                     self.activeErrorBanner = error.localizedDescription
                     self.appendErrorToAssistant(error.localizedDescription, conversationID: conversationID, messageID: assistantID)
@@ -857,7 +1013,13 @@ final class AionStore {
         streamingTask = nil
         isStreaming = false
 
+        if let convoID = conversationID {
+            liveActivityByConversation.removeValue(forKey: convoID.uuidString)
+        }
         let targetRemoteID = conversationID.flatMap { conversation(for: $0)?.remoteID } ?? streamingConversationRemoteID
+        if let targetRemoteID {
+            liveActivityByConversation.removeValue(forKey: targetRemoteID)
+        }
         streamingConversationRemoteID = nil
 
         if serverConfig.mode == .aionWebUI, let targetRemoteID {

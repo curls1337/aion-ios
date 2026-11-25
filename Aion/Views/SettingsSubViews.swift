@@ -38,9 +38,12 @@ struct AssistantsManagerView: View {
                                         .background(AionTheme.bentoSage, in: Capsule())
                                 }
                             }
-                            Text(assistant.backend)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
+                            let label = store.cleanAgentLabel(for: assistant)
+                            if !label.isEmpty {
+                                Text(label)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
                             if !assistant.description.isEmpty {
                                 Text(assistant.description)
                                     .font(.caption)

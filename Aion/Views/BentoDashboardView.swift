@@ -20,6 +20,9 @@ struct BentoDashboardView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
                 headerSection
+                if store.serverConfig.mode == .aionWebUI && !store.primaryAssistants.isEmpty {
+                    quickAssistantBar
+                }
                 bentoGridSection
                 recentThreadsSection
             }
@@ -144,6 +147,55 @@ struct BentoDashboardView: View {
         }
     }
 
+    // MARK: - 1-Tap Quick Assistant Launch Bar (PC-like Ease of Use)
+
+    private var quickAssistantBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            AionGlassContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    ForEach(store.primaryAssistants) { assistant in
+                        let isSelected = store.selectedAssistant?.id == assistant.id
+                        Button {
+                            AionHaptics.light()
+                            store.selectedAssistantID = assistant.id
+                            let convo = store.createNewConversation(title: "New Thread")
+                            onOpenConversation(convo.id)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: iconForAssistant(assistant.name))
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(isSelected ? AionTheme.terracotta : AionTheme.inkSecondary)
+
+                                Text(assistant.name)
+                                    .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(AionTheme.inkPrimary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .aionLiquidGlass(
+                                in: Capsule(),
+                                tint: isSelected ? AionTheme.terracotta : nil,
+                                interactive: true,
+                                shadowRadius: 6
+                            )
+                        }
+                        .buttonStyle(AionSpringButtonStyle(scale: 0.95))
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func iconForAssistant(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("hermes") { return "bolt.fill" }
+        if lower.contains("antigravity") { return "sparkles" }
+        if lower.contains("butler") { return "person.crop.circle.badge.checkmark" }
+        if lower.contains("cli") { return "terminal.fill" }
+        return "cpu.fill"
+    }
+
     // MARK: - 2x2 Warm Modern Bento Grid
 
     private var bentoGridSection: some View {
@@ -244,9 +296,15 @@ struct BentoDashboardView: View {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                                         .fill(threadIconBackground(for: index))
                                         .frame(width: 36, height: 36)
-                                    Image(systemName: convo.iconName)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(threadIconForeground(for: index))
+                                    if store.isConversationGenerating(convo) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(AionTheme.terracotta)
+                                    } else {
+                                        Image(systemName: convo.iconName)
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(threadIconForeground(for: index))
+                                    }
                                 }
 
                                 VStack(alignment: .leading, spacing: 2) {

@@ -30,9 +30,11 @@ enum AionAPIError: LocalizedError, Sendable {
 enum AionRealtimeEvent: Sendable {
     case wsConnected
     case wsDisconnected
+    case agentStatus(conversationID: String, statusText: String)
     case textDelta(conversationID: String, msgID: String?, text: String, replace: Bool, isUser: Bool)
-    case thinkingDelta(conversationID: String, msgID: String?, text: String)
+    case thinkingDelta(conversationID: String, msgID: String?, subject: String?, text: String, isDone: Bool)
     case toolCall(conversationID: String, msgID: String?, callID: String?, name: String, detail: String, status: AionToolCall.Status)
+    case planUpdate(conversationID: String, msgID: String?, entries: [AionPlanEntry])
     case turnCompleted(conversationID: String)
     case conversationListChanged
     case confirmationChanged(conversationID: String)
@@ -500,6 +502,8 @@ actor AionAPIClient {
         selectedProviderID: String?,
         selectedModelName: String?,
         fallbackProvider: AionProvider?,
+        permissionMode: AionPermissionMode = .defaultMode,
+        thoughtLevel: AionThoughtLevel = .auto,
         locale: String = "en-US",
         config: AionServerConfig
     ) async throws -> AionConversation {
@@ -532,7 +536,7 @@ actor AionAPIClient {
 
         if let assistant {
             var resolvedBackend = assistant.backend.lowercased()
-            if resolvedBackend == "aion" || resolvedBackend.isEmpty {
+            if resolvedBackend == "aion" || resolvedBackend.isEmpty || resolvedBackend.count == 8 {
                 if let detail = try? await fetchAssistantDetail(id: assistant.id, locale: locale, config: config) {
                     resolvedBackend = detail.lowercased()
                 }
@@ -542,7 +546,7 @@ actor AionAPIClient {
                 guard let pid = resolvedProviderID, let model = resolvedModelName else {
                     throw AionAPIError.serverError(
                         400,
-                        "Assistant '\(assistant.name)' membutuhkan Model Provider aktif. Pilih Assistant seperti Antigravity / Hermes di pill atas, atau aktifkan Model Provider di Settings."
+                        "Assistant '\(assistant.name)' membutuhkan Model Provider aktif. Pilih Assistant seperti Hermes / Antigravity, atau aktifkan Model Provider di Settings."
                     )
                 }
                 body["model"] = [
@@ -551,15 +555,26 @@ actor AionAPIClient {
                 ]
             }
 
-            body["assistant"] = [
+            var assistantObj: [String: Any] = [
                 "id": assistant.id,
                 "locale": locale
             ]
+            var overrides: [String: Any] = [:]
+            if permissionMode != .defaultMode {
+                overrides["permission"] = permissionMode.rawValue
+            }
+            if thoughtLevel != .auto {
+                overrides["thought_level"] = thoughtLevel.rawValue
+            }
+            if !overrides.isEmpty {
+                assistantObj["conversation_overrides"] = overrides
+            }
+            body["assistant"] = assistantObj
         } else {
             guard let pid = resolvedProviderID, let model = resolvedModelName else {
                 throw AionAPIError.serverError(
                     400,
-                    "Belum ada Assistant atau Model Provider aktif. Pilih Assistant (misalnya Antigravity / Hermes) di menu pill atas."
+                    "Belum ada Assistant atau Model Provider aktif. Pilih Assistant (misalnya Hermes / Antigravity) di atas."
                 )
             }
             body["type"] = "aionrs"
@@ -918,6 +933,15 @@ actor AionAPIClient {
             let replace = (payload["replace"] as? Bool) ?? false
 
             switch type {
+            case "start":
+                onEvent(.agentStatus(conversationID: convoID, statusText: "Agent started..."))
+
+            case "agent_status":
+                let statusText = extractAgentStatusText(payload["data"])
+                if !statusText.isEmpty {
+                    onEvent(.agentStatus(conversationID: convoID, statusText: statusText))
+                }
+
             case "content", "text", "user_content":
                 let extracted = extractTextContent(payload["data"])
                 if !extracted.isEmpty {
@@ -926,13 +950,16 @@ actor AionAPIClient {
                 }
 
             case "thinking", "thought":
+                let dataDict = payload["data"] as? [String: Any]
+                let subject = (dataDict?["subject"] as? String) ?? (dataDict?["description"] as? String)
                 let extracted = extractTextContent(payload["data"])
-                if !extracted.isEmpty {
-                    onEvent(.thinkingDelta(conversationID: convoID, msgID: msgID, text: extracted))
+                let isDone = ((dataDict?["status"] as? String)?.lowercased() == "done")
+                if !extracted.isEmpty || (subject?.isEmpty == false) || isDone {
+                    onEvent(.thinkingDelta(conversationID: convoID, msgID: msgID, subject: subject, text: extracted, isDone: isDone))
                 }
 
             case "tool_call", "acp_tool_call", "tool_group":
-                if let tool = extractToolCall(from: payload["data"]) {
+                for tool in extractToolCalls(from: payload["data"]) {
                     onEvent(.toolCall(
                         conversationID: convoID,
                         msgID: msgID,
@@ -941,6 +968,12 @@ actor AionAPIClient {
                         detail: tool.detail,
                         status: tool.status
                     ))
+                }
+
+            case "plan":
+                let entries = extractPlanEntries(from: payload["data"])
+                if !entries.isEmpty {
+                    onEvent(.planUpdate(conversationID: convoID, msgID: msgID, entries: entries))
                 }
 
             case "permission", "ask":
@@ -1127,13 +1160,27 @@ actor AionAPIClient {
             )
 
         case "tool_call", "acp_tool_call", "tool_group":
-            if let tool = extractToolCall(from: dict["content"] ?? dict["data"]) {
+            let tools = extractToolCalls(from: dict["content"] ?? dict["data"])
+            if !tools.isEmpty {
                 return AionMessage(
                     remoteMsgID: msgID,
                     role: .assistant,
                     content: "",
                     createdAt: created,
-                    toolCalls: [tool]
+                    toolCalls: tools
+                )
+            }
+            return nil
+
+        case "plan":
+            let entries = extractPlanEntries(from: dict["content"] ?? dict["data"])
+            if !entries.isEmpty {
+                return AionMessage(
+                    remoteMsgID: msgID,
+                    role: .assistant,
+                    content: "",
+                    createdAt: created,
+                    planEntries: entries
                 )
             }
             return nil
@@ -1165,6 +1212,52 @@ actor AionAPIClient {
         return ""
     }
 
+    private func extractAgentStatusText(_ raw: Any?) -> String {
+        if let str = raw as? String { return str }
+        if let dict = raw as? [String: Any] {
+            let status = (dict["status"] as? String) ?? ""
+            let backend = (dict["backend"] as? String) ?? ""
+            let msg = (dict["message"] as? String) ?? (dict["description"] as? String) ?? ""
+            if !msg.isEmpty { return msg }
+            if !backend.isEmpty && !status.isEmpty { return "\(backend.capitalized) · \(status)" }
+            return status
+        }
+        return ""
+    }
+
+    private func extractPlanEntries(from raw: Any?) -> [AionPlanEntry] {
+        let arr: [[String: Any]]
+        if let dict = raw as? [String: Any] {
+            arr = (dict["entries"] as? [[String: Any]])
+                ?? (dict["steps"] as? [[String: Any]])
+                ?? ((dict["update"] as? [String: Any])?["entries"] as? [[String: Any]])
+                ?? []
+        } else if let direct = raw as? [[String: Any]] {
+            arr = direct
+        } else {
+            arr = []
+        }
+
+        return arr.enumerated().compactMap { index, item in
+            guard let content = (item["content"] as? String) ?? (item["title"] as? String) ?? (item["text"] as? String),
+                  !content.isEmpty else {
+                return nil
+            }
+            let status = (item["status"] as? String) ?? "pending"
+            return AionPlanEntry(id: "\(index)-\(content.prefix(20))", title: content, status: status)
+        }
+    }
+
+    private func extractToolCalls(from raw: Any?) -> [AionToolCall] {
+        if let arr = raw as? [[String: Any]] {
+            return arr.compactMap { extractToolCall(from: $0) }
+        }
+        if let single = extractToolCall(from: raw) {
+            return [single]
+        }
+        return []
+    }
+
     private func extractToolCall(from raw: Any?) -> AionToolCall? {
         if let arr = raw as? [[String: Any]], let first = arr.first {
             return extractToolCall(from: first)
@@ -1177,18 +1270,29 @@ actor AionAPIClient {
             ?? (update["kind"] as? String)
             ?? "tool"
         let callID = (update["toolCallId"] as? String) ?? (dict["callId"] as? String) ?? (dict["id"] as? String)
-        let rawStatus = ((update["status"] as? String) ?? (dict["status"] as? String) ?? "completed").lowercased()
+        let rawStatus = ((update["status"] as? String) ?? (dict["status"] as? String) ?? "running").lowercased()
         let status: AionToolCall.Status
-        if rawStatus.contains("run") || rawStatus.contains("pending") || rawStatus.contains("progress") {
+        if rawStatus.contains("run") || rawStatus.contains("pending") || rawStatus.contains("progress") || rawStatus.contains("start") || rawStatus.contains("exec") {
             status = .running
-        } else if rawStatus.contains("err") || rawStatus.contains("fail") {
+        } else if rawStatus.contains("err") || rawStatus.contains("fail") || rawStatus.contains("cancel") {
             status = .failed
         } else {
             status = .completed
         }
-        let detail = (update["description"] as? String)
-            ?? (update["kind"] as? String)
-            ?? (status == .running ? "Running..." : "Completed")
+
+        var detail = (update["description"] as? String) ?? ""
+        if detail.isEmpty, let rawInput = (update["rawInput"] as? [String: Any]) ?? (dict["args"] as? [String: Any]) {
+            if let cmd = (rawInput["command"] as? String) ?? (rawInput["CommandLine"] as? String) {
+                detail = cmd
+            } else if let path = (rawInput["path"] as? String) ?? (rawInput["Path"] as? String) ?? (rawInput["file_path"] as? String) {
+                detail = (path as NSString).lastPathComponent
+            } else if let query = (rawInput["query"] as? String) ?? (rawInput["Query"] as? String) {
+                detail = query
+            }
+        }
+        if detail.isEmpty {
+            detail = (update["kind"] as? String) ?? (status == .running ? "Executing..." : "Completed")
+        }
         return AionToolCall(callID: callID, name: name, detail: detail, status: status)
     }
 

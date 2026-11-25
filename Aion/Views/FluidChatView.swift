@@ -156,16 +156,36 @@ struct FluidChatView: View {
     private var modelPickerPill: some View {
         Menu {
             if store.serverConfig.mode == .aionWebUI && !store.assistants.isEmpty {
-                Section("Aion Assistants") {
-                    ForEach(store.assistants) { assistant in
+                Section("Core Assistants") {
+                    ForEach(store.primaryAssistants) { assistant in
                         Button {
                             store.updateAssistantForUnsavedConversation(conversationID, assistantID: assistant.id)
                             AionHaptics.selection()
                         } label: {
+                            let agentTag = store.cleanAgentLabel(for: assistant)
+                            let labelText = agentTag.isEmpty || agentTag.lowercased() == assistant.name.lowercased()
+                                ? assistant.name
+                                : "\(assistant.name) · \(agentTag)"
                             Label(
-                                "\(assistant.name) · \(assistant.backend)",
+                                labelText,
                                 systemImage: store.selectedAssistant?.id == assistant.id ? "checkmark" : "sparkles"
                             )
+                        }
+                    }
+                }
+
+                if !store.secondaryAssistants.isEmpty {
+                    Menu("More Assistants (\(store.secondaryAssistants.count))") {
+                        ForEach(store.secondaryAssistants) { assistant in
+                            Button {
+                                store.updateAssistantForUnsavedConversation(conversationID, assistantID: assistant.id)
+                                AionHaptics.selection()
+                            } label: {
+                                Label(
+                                    assistant.name,
+                                    systemImage: store.selectedAssistant?.id == assistant.id ? "checkmark" : "wand.and.stars"
+                                )
+                            }
                         }
                     }
                 }
@@ -294,29 +314,149 @@ struct FluidChatView: View {
 
     private var emptyThreadStarter: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Spacer().frame(height: 36)
+            Spacer().frame(height: 16)
 
-            Image(systemName: "sparkles")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(AionTheme.terracotta)
-                .frame(width: 54, height: 54)
-                .aionBentoCard(fill: AionTheme.bentoSand, cornerRadius: 18)
-
-            Text("What can Aion help you build today?")
-                .font(.system(size: 26, weight: .bold, design: .rounded))
+            Text("Hi, what's your plan for today?")
+                .font(.system(size: 27, weight: .bold, design: .rounded))
                 .foregroundStyle(AionTheme.inkPrimary)
 
-            Text("Connected in \(store.serverConfig.mode.rawValue). Pick a quick prompt or ask anything below.")
-                .font(.system(size: 15))
-                .foregroundStyle(AionTheme.inkSecondary)
+            // 1-Tap Liquid Glass Assistant Pill Selector (matches PC Guid bar)
+            if store.serverConfig.mode == .aionWebUI && !store.primaryAssistants.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    AionGlassContainer(spacing: 8) {
+                        HStack(spacing: 8) {
+                            ForEach(store.primaryAssistants) { assistant in
+                                let isSelected = store.selectedAssistant?.id == assistant.id
+                                Button {
+                                    AionHaptics.selection()
+                                    store.updateAssistantForUnsavedConversation(conversationID, assistantID: assistant.id)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: iconForAssistant(assistant.name))
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(isSelected ? AionTheme.terracotta : AionTheme.inkSecondary)
+                                        Text(assistant.name)
+                                            .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(AionTheme.inkPrimary)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 9)
+                                    .aionLiquidGlass(
+                                        in: Capsule(),
+                                        tint: isSelected ? AionTheme.terracotta : nil,
+                                        interactive: true,
+                                        shadowRadius: 6
+                                    )
+                                }
+                                .buttonStyle(AionSpringButtonStyle(scale: 0.95))
+                            }
 
-            VStack(spacing: 10) {
-                starterPromptRow("Summarize the Q3 report", icon: "doc.text.fill")
-                starterPromptRow("Show Swift WebSocket connection code", icon: "chevron.left.forwardslash.chevron.right")
-                starterPromptRow("Review my active scheduled tasks", icon: "clock.fill")
+                            if !store.secondaryAssistants.isEmpty {
+                                Menu {
+                                    ForEach(store.secondaryAssistants) { assistant in
+                                        Button {
+                                            store.updateAssistantForUnsavedConversation(conversationID, assistantID: assistant.id)
+                                            AionHaptics.selection()
+                                        } label: {
+                                            Label(
+                                                assistant.name,
+                                                systemImage: store.selectedAssistant?.id == assistant.id ? "checkmark" : "wand.and.stars"
+                                            )
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text("More")
+                                            .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 10, weight: .bold))
+                                    }
+                                    .foregroundStyle(AionTheme.inkSecondary)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 9)
+                                    .aionLiquidGlass(in: Capsule(), interactive: true, shadowRadius: 6)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                // Quick Config Row (Permission + Thought Level — matches PC sendbox bar)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Menu {
+                            ForEach(AionPermissionMode.allCases) { mode in
+                                Button {
+                                    store.selectedPermissionMode = mode
+                                    AionHaptics.selection()
+                                } label: {
+                                    Label(mode.label, systemImage: store.selectedPermissionMode == mode ? "checkmark" : mode.iconName)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: store.selectedPermissionMode.iconName)
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(store.selectedPermissionMode.label)
+                                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                            .foregroundStyle(AionTheme.inkSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .aionLiquidGlass(in: Capsule(), interactive: true, shadowRadius: 4)
+                        }
+
+                        Menu {
+                            ForEach(AionThoughtLevel.allCases) { level in
+                                Button {
+                                    store.selectedThoughtLevel = level
+                                    AionHaptics.selection()
+                                } label: {
+                                    Label("Thought: \(level.label)", systemImage: store.selectedThoughtLevel == level ? "checkmark" : "brain")
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "brain.head.profile")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("Thought · \(store.selectedThoughtLevel.label)")
+                                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                            .foregroundStyle(AionTheme.inkSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .aionLiquidGlass(in: Capsule(), interactive: true, shadowRadius: 4)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Try these instructions")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AionTheme.inkTertiary)
+                    .padding(.leading, 4)
+
+                starterPromptRow("Get to know my workspace and explain what I can do", icon: "folder.fill")
+                starterPromptRow("Summarize my recent tasks and suggest next priorities", icon: "doc.text.fill")
+                starterPromptRow("Check my active scheduled tasks and skills", icon: "clock.fill")
             }
             .padding(.top, 4)
         }
+    }
+
+    private func iconForAssistant(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("hermes") { return "bolt.fill" }
+        if lower.contains("antigravity") { return "sparkles" }
+        if lower.contains("butler") { return "person.crop.circle.badge.checkmark" }
+        if lower.contains("cli") { return "terminal.fill" }
+        return "cpu.fill"
     }
 
     private func starterPromptRow(_ prompt: String, icon: String) -> some View {
@@ -348,6 +488,16 @@ struct FluidChatView: View {
 
     private var bottomComposerDock: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Live Agent Activity Status Banner (shows exactly what the agent is doing right now!)
+            if let activity = store.liveActivity(for: conversationID) {
+                LiveAgentActivityBanner(activity: activity) {
+                    store.stopStreaming(in: conversationID)
+                    AionHaptics.light()
+                }
+                .padding(.horizontal, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Pending attachments or selected skill chips
             if !pendingAttachments.isEmpty || store.selectedSkillForNextPrompt != nil {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -582,22 +732,52 @@ private struct EditorialMessageRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                // Collapsible Thinking / Reasoning block
+                // Collapsible / Live Reasoning block (auto-shows live preview while thinking!)
                 if let thinking = message.thinking, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    DisclosureGroup {
-                        Text(thinking)
-                            .font(.system(size: 13))
-                            .foregroundStyle(AionTheme.inkSecondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 6)
-                    } label: {
-                        Label("Reasoning", systemImage: "brain.head.profile")
-                            .font(.system(size: 12.5, weight: .semibold, design: .rounded))
-                            .foregroundStyle(AionTheme.inkSecondary)
+                    let isActivelyThinking = isStreaming && message.content.isEmpty
+                    if isActivelyThinking {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(AionTheme.terracotta)
+                                Text(message.thinkingSubject ?? "Thinking...")
+                                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                                    .foregroundStyle(AionTheme.terracotta)
+                            }
+                            Text(thinking)
+                                .font(.system(size: 13))
+                                .foregroundStyle(AionTheme.inkSecondary)
+                                .lineLimit(5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(12)
+                        .background(AionTheme.surfaceSecondary.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(AionTheme.terracotta.opacity(0.28), lineWidth: 0.8)
+                        )
+                    } else {
+                        DisclosureGroup {
+                            Text(thinking)
+                                .font(.system(size: 13))
+                                .foregroundStyle(AionTheme.inkSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 6)
+                        } label: {
+                            Label(message.thinkingSubject ?? "Reasoning", systemImage: "brain.head.profile")
+                                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                                .foregroundStyle(AionTheme.inkSecondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(AionTheme.surfaceSecondary.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(AionTheme.surfaceSecondary.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
+                // Live Plan Steps Checklist Card
+                if !message.planEntries.isEmpty {
+                    PlanChecklistCard(entries: message.planEntries)
                 }
 
                 // Tool / Skill Execution Pills
@@ -725,6 +905,120 @@ private struct FileChipView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(AionTheme.border, lineWidth: 0.75)
         )
+    }
+}
+
+private struct LiveAgentActivityBanner: View {
+    let activity: AionLiveActivity
+    let onStop: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = max(0, Int(context.date.timeIntervalSince(activity.startedAt)))
+            let minutes = elapsed / 60
+            let seconds = elapsed % 60
+            let timerLabel = String(format: "%d:%02d", minutes, seconds)
+
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(phaseTint.opacity(0.16))
+                        .frame(width: 30, height: 30)
+                    if activity.phase == .waitingApproval {
+                        Image(systemName: "shield.lefthalf.filled")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(phaseTint)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(phaseTint)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(activity.title)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(AionTheme.inkPrimary)
+                            .lineLimit(1)
+
+                        Text(timerLabel)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AionTheme.inkTertiary)
+                    }
+
+                    if !activity.detail.isEmpty {
+                        Text(activity.detail)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(AionTheme.inkSecondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                Button(action: onStop) {
+                    Text("Stop")
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(AionTheme.terracotta)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(AionTheme.bentoSand.opacity(0.85), in: Capsule())
+                }
+                .buttonStyle(AionSpringButtonStyle(scale: 0.94))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .aionLiquidGlass(in: RoundedRectangle(cornerRadius: 18, style: .continuous), tint: phaseTint, interactive: false, shadowRadius: 8)
+        }
+    }
+
+    private var phaseTint: Color {
+        switch activity.phase {
+        case .starting: return AionTheme.amber
+        case .thinking: return AionTheme.lavenderAccent
+        case .runningTool: return AionTheme.forest
+        case .writing: return AionTheme.terracotta
+        case .waitingApproval: return AionTheme.amber
+        }
+    }
+}
+
+private struct PlanChecklistCard: View {
+    let entries: [AionPlanEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Execution Plan", systemImage: "checklist")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(AionTheme.inkPrimary)
+
+            ForEach(entries) { entry in
+                HStack(alignment: .top, spacing: 8) {
+                    if entry.status == "completed" || entry.status == "done" {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(AionTheme.forest)
+                    } else if entry.status == "in_progress" {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(AionTheme.terracotta)
+                    } else {
+                        Image(systemName: "circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(AionTheme.inkTertiary)
+                    }
+
+                    Text(entry.title)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(entry.status == "completed" ? AionTheme.inkSecondary : AionTheme.inkPrimary)
+                        .strikethrough(entry.status == "completed")
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .aionBentoCard(fill: AionTheme.surface, cornerRadius: 18)
     }
 }
 
