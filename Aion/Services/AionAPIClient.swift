@@ -52,8 +52,8 @@ actor AionAPIClient {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 300
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
         config.httpCookieStorage = HTTPCookieStorage.shared
@@ -478,14 +478,41 @@ actor AionAPIClient {
 
     func createConversation(
         name: String,
-        assistantID: String?,
+        assistant: AionAssistant?,
+        fallbackProvider: AionProvider?,
+        locale: String = "en-US",
         config: AionServerConfig
     ) async throws -> AionConversation {
-        var body: [String: Any] = ["name": name]
-        if let assistantID, !assistantID.isEmpty {
-            body["assistant"] = assistantID
+        var body: [String: Any] = [
+            "name": name,
+            "extra": [String: Any]()
+        ]
+
+        if let assistant {
+            // AionUi Rust/Axum API requires `assistant` as an object: { id, locale, conversation_overrides }
+            body["assistant"] = [
+                "id": assistant.id,
+                "locale": locale,
+                "conversation_overrides": [String: Any]()
+            ]
+
+            // For aionrs (Aion CLI) assistants, attach a configured provider model if available
+            if assistant.backend.lowercased() == "aionrs",
+               let provider = fallbackProvider,
+               let firstModel = provider.models.first {
+                body["model"] = [
+                    "provider_id": provider.id,
+                    "model": firstModel
+                ]
+            }
         } else {
             body["type"] = "aionrs"
+            if let provider = fallbackProvider, let firstModel = provider.models.first {
+                body["model"] = [
+                    "provider_id": provider.id,
+                    "model": firstModel
+                ]
+            }
         }
 
         let raw = try await requestJSON(method: "POST", path: "/api/conversations", body: body, config: config)
@@ -493,6 +520,16 @@ actor AionAPIClient {
             return convo
         }
         throw AionAPIError.decodingFailed
+    }
+
+    func ensureRuntime(remoteID: String, config: AionServerConfig) async {
+        let encoded = remoteID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? remoteID
+        _ = try? await requestJSON(
+            method: "POST",
+            path: "/api/conversations/\(encoded)/runtime/ensure",
+            body: [String: Any](),
+            config: config
+        )
     }
 
     func deleteConversation(remoteID: String, config: AionServerConfig) async throws {
@@ -538,7 +575,10 @@ actor AionAPIClient {
             guard let id = item["id"] as? String else { return nil }
             let name = (item["name"] as? String) ?? id
             let description = (item["description"] as? String) ?? ""
-            let backend = (item["backend"] as? String) ?? (item["agent"] as? String) ?? "aion"
+            let backend = (item["agent_id"] as? String)
+                ?? (item["backend"] as? String)
+                ?? (item["agent"] as? String)
+                ?? "aion"
             let avatar = item["avatar"] as? String
             let enabled = (item["enabled"] as? Bool) ?? true
             return AionAssistant(id: id, name: name, description: description, backend: backend, avatar: avatar, enabled: enabled)
@@ -702,6 +742,15 @@ actor AionAPIClient {
             while !Task.isCancelled {
                 guard let self else { break }
                 var req = URLRequest(url: wsURL)
+                if let httpURL = config.normalizedBaseURL,
+                   let cookies = HTTPCookieStorage.shared.cookies(for: httpURL),
+                   !cookies.isEmpty {
+                    let headers = HTTPCookie.requestHeaderFields(with: cookies)
+                    for (k, v) in headers {
+                        req.setValue(v, forHTTPHeaderField: k)
+                    }
+                    req.setValue(httpURL.absoluteString, forHTTPHeaderField: "Origin")
+                }
                 if !config.apiKey.isEmpty {
                     req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
                 }

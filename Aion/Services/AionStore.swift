@@ -326,11 +326,20 @@ final class AionStore {
         guard serverConfig.mode == .aionWebUI,
               let remoteID = conversation(for: conversationID)?.remoteID else { return }
         let config = serverConfig
+        Task { await apiClient.ensureRuntime(remoteID: remoteID, config: config) }
         async let confTask = try? apiClient.fetchConfirmations(remoteID: remoteID, config: config)
         async let slashTask = try? apiClient.fetchSlashCommands(remoteID: remoteID, config: config)
         let (confs, slashes) = await (confTask, slashTask)
         if let confs { pendingConfirmations[remoteID] = confs }
         if let slashes { slashCommandsByConversation[remoteID] = slashes }
+    }
+
+    func updateAssistantForUnsavedConversation(_ conversationID: UUID, assistantID: String) {
+        selectedAssistantID = assistantID
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }),
+           conversations[idx].remoteID == nil {
+            conversations[idx].assistantID = assistantID
+        }
     }
 
     func confirmToolAction(conversationID: UUID, confirmation: AionConfirmationItem, option: AionConfirmationOption) async {
@@ -701,15 +710,20 @@ final class AionStore {
                     // Create remote conversation on AionUi server if this is a brand-new thread
                     var remoteID = self.conversation(for: conversationID)?.remoteID
                     if remoteID == nil {
+                        let chosenAssistant = self.assistants.first(where: { $0.id == moved.assistantID }) ?? self.selectedAssistant
+                        let defaultProvider = self.providers.first(where: { !$0.models.isEmpty })
                         let created = try await apiClient.createConversation(
                             name: moved.title,
-                            assistantID: moved.assistantID ?? self.selectedAssistant?.id,
+                            assistant: chosenAssistant,
+                            fallbackProvider: defaultProvider,
+                            locale: self.remoteSettings.language.isEmpty ? "en-US" : self.remoteSettings.language,
                             config: configSnapshot
                         )
                         remoteID = created.remoteID
                         if let idx = self.conversations.firstIndex(where: { $0.id == conversationID }) {
                             self.conversations[idx].remoteID = created.remoteID
                             self.conversations[idx].conversationType = created.conversationType
+                            self.conversations[idx].assistantID = chosenAssistant?.id
                         }
                     }
 
@@ -732,6 +746,16 @@ final class AionStore {
                         injectSkills: skillList,
                         config: configSnapshot
                     )
+
+                    // Safety net: if WS missed early chunks on mobile networks, sync canonical messages after send returns
+                    try? await Task.sleep(for: .milliseconds(900))
+                    if !Task.isCancelled,
+                       let convo = self.conversation(for: conversationID),
+                       let last = convo.messages.last,
+                       last.role == .assistant,
+                       last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        await self.loadMessagesIfNeeded(for: conversationID, force: true)
+                    }
                 } catch is CancellationError {
                     self.isStreaming = false
                 } catch AionAPIError.unauthorized {

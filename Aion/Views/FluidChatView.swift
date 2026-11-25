@@ -159,7 +159,7 @@ struct FluidChatView: View {
                 Section("Aion Assistants") {
                     ForEach(store.assistants) { assistant in
                         Button {
-                            store.selectedAssistantID = assistant.id
+                            store.updateAssistantForUnsavedConversation(conversationID, assistantID: assistant.id)
                             AionHaptics.selection()
                         } label: {
                             Label(
