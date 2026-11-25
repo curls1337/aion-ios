@@ -19,6 +19,7 @@ struct AionProvider: Identifiable, Hashable, Codable, Sendable {
     let baseURL: String
     var models: [String]
     let hasAPIKey: Bool
+    var enabled: Bool
 }
 
 struct AionMCPServer: Identifiable, Hashable, Codable, Sendable {

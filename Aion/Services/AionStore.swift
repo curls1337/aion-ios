@@ -21,6 +21,8 @@ final class AionStore {
     var isLoadingMoreConversations: Bool = false
     var managedAgents: [AionManagedAgent] = []
     var providers: [AionProvider] = []
+    var selectedProviderID: String?
+    var selectedProviderModel: String?
     var mcpServers: [AionMCPServer] = []
     var remoteSettings: AionRemoteSettings = AionRemoteSettings()
     var systemInfo: AionSystemInfo = AionSystemInfo()
@@ -63,6 +65,7 @@ final class AionStore {
     private enum StorageKeys {
         static let serverConfig = "aion.serverConfig.v2"
         static let appearance = "aion.appearanceMode.v1"
+        static let selectedAssistant = "aion.selectedAssistantID.v1"
         static let keychainPassword = "aion.webui.password"
         static let keychainAPIKey = "aion.api.key"
     }
@@ -231,9 +234,10 @@ final class AionStore {
         async let mcpTask = try? apiClient.fetchMCPServers(config: config)
         async let settingsTask = try? apiClient.fetchRemoteSettings(config: config)
         async let sysTask = try? apiClient.fetchSystemInfo(config: config)
+        async let lastAsstTask = apiClient.fetchLastAssistantID(config: config)
 
-        let (fetchedPage, fetchedAssistants, fetchedSkills, fetchedCrons, fetchedAgents, fetchedProviders, fetchedMCP, fetchedSettings, fetchedSys) = await (
-            convTask, asstTask, skillTask, cronTask, agentsTask, providersTask, mcpTask, settingsTask, sysTask
+        let (fetchedPage, fetchedAssistants, fetchedSkills, fetchedCrons, fetchedAgents, fetchedProviders, fetchedMCP, fetchedSettings, fetchedSys, remoteLastAssistantID) = await (
+            convTask, asstTask, skillTask, cronTask, agentsTask, providersTask, mcpTask, settingsTask, sysTask, lastAsstTask
         )
 
         if let fetchedPage {
@@ -255,10 +259,35 @@ final class AionStore {
             persistConversations()
         }
 
+        if let fetchedProviders {
+            providers = fetchedProviders
+            if selectedProviderID == nil || selectedProviderModel == nil {
+                if let usable = fetchedProviders.first(where: { $0.enabled && !$0.models.isEmpty }),
+                   let firstModel = usable.models.first {
+                    selectedProviderID = usable.id
+                    selectedProviderModel = firstModel
+                }
+            }
+        }
+
         if let fetchedAssistants {
             assistants = fetchedAssistants
-            if selectedAssistantID == nil {
-                selectedAssistantID = fetchedAssistants.first(where: \.enabled)?.id ?? fetchedAssistants.first?.id
+            let validSaved = selectedAssistantID.flatMap { saved in fetchedAssistants.first(where: { $0.id == saved })?.id }
+            if let validSaved {
+                selectedAssistantID = validSaved
+            } else if let remoteLast = remoteLastAssistantID,
+                      fetchedAssistants.contains(where: { $0.id == remoteLast && $0.enabled }) {
+                // Mirror the exact last-used assistant from the user's PC WebUI!
+                selectedAssistantID = remoteLast
+            } else {
+                let hasUsableProvider = providers.contains(where: { $0.enabled && !$0.models.isEmpty })
+                if !hasUsableProvider,
+                   let acpAssistant = fetchedAssistants.first(where: { $0.enabled && $0.backend.lowercased() != "aionrs" && $0.id.lowercased() != "aion-cli" }) {
+                    // Prefer ACP/CLI assistants (Antigravity, Hermes, etc.) when no API-key LLM provider is configured for Aion CLI
+                    selectedAssistantID = acpAssistant.id
+                } else {
+                    selectedAssistantID = fetchedAssistants.first(where: \.enabled)?.id ?? fetchedAssistants.first?.id
+                }
             }
         }
 
@@ -272,7 +301,6 @@ final class AionStore {
         }
 
         if let fetchedAgents { managedAgents = fetchedAgents }
-        if let fetchedProviders { providers = fetchedProviders }
         if let fetchedMCP { mcpServers = fetchedMCP }
         if let fetchedSettings { remoteSettings = fetchedSettings }
         if let fetchedSys { systemInfo = fetchedSys }
@@ -336,6 +364,7 @@ final class AionStore {
 
     func updateAssistantForUnsavedConversation(_ conversationID: UUID, assistantID: String) {
         selectedAssistantID = assistantID
+        defaults.set(assistantID, forKey: StorageKeys.selectedAssistant)
         if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
             let hasSuccessfulReply = conversations[idx].messages.contains {
                 $0.role == .assistant && !$0.content.isEmpty && !$0.content.hasPrefix("Request failed:")
@@ -344,6 +373,22 @@ final class AionStore {
                 conversations[idx].assistantID = assistantID
                 conversations[idx].remoteID = nil
             }
+        }
+    }
+
+    func selectRemoteProviderModel(providerID: String, modelName: String, for conversationID: UUID?) async {
+        selectedProviderID = providerID
+        selectedProviderModel = modelName
+        AionHaptics.selection()
+        if serverConfig.mode == .aionWebUI,
+           let convoID = conversationID,
+           let remoteID = conversation(for: convoID)?.remoteID {
+            try? await apiClient.updateConversationModel(
+                remoteID: remoteID,
+                providerID: providerID,
+                modelName: modelName,
+                config: serverConfig
+            )
         }
     }
 
@@ -716,10 +761,12 @@ final class AionStore {
                     var remoteID = self.conversation(for: conversationID)?.remoteID
                     if remoteID == nil {
                         let chosenAssistant = self.assistants.first(where: { $0.id == moved.assistantID }) ?? self.selectedAssistant
-                        let defaultProvider = self.providers.first(where: { !$0.models.isEmpty })
+                        let defaultProvider = self.providers.first(where: { $0.enabled && !$0.models.isEmpty })
                         let created = try await apiClient.createConversation(
                             name: moved.title,
                             assistant: chosenAssistant,
+                            selectedProviderID: self.selectedProviderID,
+                            selectedModelName: self.selectedProviderModel,
                             fallbackProvider: defaultProvider,
                             locale: self.remoteSettings.language.isEmpty ? "en-US" : self.remoteSettings.language,
                             config: configSnapshot
@@ -1007,6 +1054,10 @@ final class AionStore {
         } else {
             serverConfig.password = AionKeychain.read(account: StorageKeys.keychainPassword) ?? ""
             serverConfig.apiKey = AionKeychain.read(account: StorageKeys.keychainAPIKey) ?? ""
+        }
+
+        if let savedAsst = defaults.string(forKey: StorageKeys.selectedAssistant), !savedAsst.isEmpty {
+            selectedAssistantID = savedAsst
         }
 
         if let rawAppearance = defaults.string(forKey: StorageKeys.appearance),

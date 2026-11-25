@@ -335,24 +335,61 @@ extension AionAPIClient {
             let name = (item["name"] as? String) ?? id
             let platform = (item["platform"] as? String) ?? "openai"
             let baseURL = (item["baseUrl"] as? String) ?? (item["base_url"] as? String) ?? ""
-            let models: [String]
+            let rawModels: [String]
             if let arr = item["model"] as? [String] {
-                models = arr
+                rawModels = arr
             } else if let arr = item["models"] as? [String] {
-                models = arr
+                rawModels = arr
             } else {
-                models = []
+                rawModels = []
             }
+            let modelEnabledMap = item["model_enabled"] as? [String: Bool]
+            let enabledModels = rawModels.filter { modelName in
+                modelEnabledMap?[modelName] != false
+            }
+            let enabled = (item["enabled"] as? Bool) ?? true
             let apiKeyStr = (item["apiKey"] as? String) ?? (item["api_key"] as? String) ?? ""
             return AionProvider(
                 id: id,
                 name: name,
                 platform: platform,
                 baseURL: baseURL,
-                models: models,
-                hasAPIKey: !apiKeyStr.isEmpty
+                models: enabledModels,
+                hasAPIKey: !apiKeyStr.isEmpty,
+                enabled: enabled
             )
         }
+    }
+
+    func fetchLastAssistantID(config: AionServerConfig) async -> String? {
+        guard let raw = try? await requestJSONPublic(
+            method: "GET",
+            path: "/api/settings/client?keys=guid.lastAssistantId",
+            config: config
+        ) as? [String: Any] else {
+            return nil
+        }
+        return raw["guid.lastAssistantId"] as? String
+    }
+
+    func updateConversationModel(
+        remoteID: String,
+        providerID: String,
+        modelName: String,
+        config: AionServerConfig
+    ) async throws {
+        let enc = remoteID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? remoteID
+        _ = try await requestJSONPublic(
+            method: "PATCH",
+            path: "/api/conversations/\(enc)",
+            body: [
+                "model": [
+                    "provider_id": providerID,
+                    "model": modelName
+                ]
+            ],
+            config: config
+        )
     }
 
     // MARK: - MCP Servers

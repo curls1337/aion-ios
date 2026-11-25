@@ -497,6 +497,8 @@ actor AionAPIClient {
     func createConversation(
         name: String,
         assistant: AionAssistant?,
+        selectedProviderID: String?,
+        selectedModelName: String?,
         fallbackProvider: AionProvider?,
         locale: String = "en-US",
         config: AionServerConfig
@@ -514,8 +516,21 @@ actor AionAPIClient {
             "extra": extra
         ]
 
+        // Resolve usable provider + model if available
+        let resolvedProviderID: String?
+        let resolvedModelName: String?
+        if let pid = selectedProviderID, !pid.isEmpty, let m = selectedModelName, !m.isEmpty {
+            resolvedProviderID = pid
+            resolvedModelName = m
+        } else if let provider = fallbackProvider, provider.enabled, let firstModel = provider.models.first {
+            resolvedProviderID = provider.id
+            resolvedModelName = firstModel
+        } else {
+            resolvedProviderID = nil
+            resolvedModelName = nil
+        }
+
         if let assistant {
-            // Check exact assistant detail if backend is generic so we know whether `aionrs` needs `model`
             var resolvedBackend = assistant.backend.lowercased()
             if resolvedBackend == "aion" || resolvedBackend.isEmpty {
                 if let detail = try? await fetchAssistantDetail(id: assistant.id, locale: locale, config: config) {
@@ -523,28 +538,35 @@ actor AionAPIClient {
                 }
             }
 
+            if resolvedBackend == "aionrs" {
+                guard let pid = resolvedProviderID, let model = resolvedModelName else {
+                    throw AionAPIError.serverError(
+                        400,
+                        "Assistant '\(assistant.name)' membutuhkan Model Provider aktif. Pilih Assistant seperti Antigravity / Hermes di pill atas, atau aktifkan Model Provider di Settings."
+                    )
+                }
+                body["model"] = [
+                    "provider_id": pid,
+                    "model": model
+                ]
+            }
+
             body["assistant"] = [
                 "id": assistant.id,
                 "locale": locale
             ]
-
-            // For aionrs (Aion CLI) assistants, attach a configured provider model just like the Web client
-            if resolvedBackend == "aionrs",
-               let provider = fallbackProvider,
-               let firstModel = provider.models.first {
-                body["model"] = [
-                    "provider_id": provider.id,
-                    "model": firstModel
-                ]
-            }
         } else {
-            body["type"] = "aionrs"
-            if let provider = fallbackProvider, let firstModel = provider.models.first {
-                body["model"] = [
-                    "provider_id": provider.id,
-                    "model": firstModel
-                ]
+            guard let pid = resolvedProviderID, let model = resolvedModelName else {
+                throw AionAPIError.serverError(
+                    400,
+                    "Belum ada Assistant atau Model Provider aktif. Pilih Assistant (misalnya Antigravity / Hermes) di menu pill atas."
+                )
             }
+            body["type"] = "aionrs"
+            body["model"] = [
+                "provider_id": pid,
+                "model": model
+            ]
         }
 
         let raw = try await requestJSON(method: "POST", path: "/api/conversations", body: body, config: config)

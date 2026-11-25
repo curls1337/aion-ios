@@ -169,6 +169,34 @@ struct FluidChatView: View {
                         }
                     }
                 }
+
+                let usableProviders = store.providers.filter { $0.enabled && !$0.models.isEmpty }
+                if !usableProviders.isEmpty {
+                    Section("Provider Models (Aion CLI)") {
+                        ForEach(usableProviders) { provider in
+                            Menu(provider.name) {
+                                ForEach(provider.models, id: \.self) { modelName in
+                                    Button {
+                                        Task {
+                                            await store.selectRemoteProviderModel(
+                                                providerID: provider.id,
+                                                modelName: modelName,
+                                                for: conversationID
+                                            )
+                                        }
+                                    } label: {
+                                        Label(
+                                            modelName,
+                                            systemImage: (store.selectedProviderID == provider.id && store.selectedProviderModel == modelName)
+                                                ? "checkmark"
+                                                : "cpu"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 ForEach(AionModelOption.defaults) { option in
                     Button {
