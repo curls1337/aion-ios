@@ -336,9 +336,14 @@ final class AionStore {
 
     func updateAssistantForUnsavedConversation(_ conversationID: UUID, assistantID: String) {
         selectedAssistantID = assistantID
-        if let idx = conversations.firstIndex(where: { $0.id == conversationID }),
-           conversations[idx].remoteID == nil {
-            conversations[idx].assistantID = assistantID
+        if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+            let hasSuccessfulReply = conversations[idx].messages.contains {
+                $0.role == .assistant && !$0.content.isEmpty && !$0.content.hasPrefix("Request failed:")
+            }
+            if conversations[idx].remoteID == nil || !hasSuccessfulReply {
+                conversations[idx].assistantID = assistantID
+                conversations[idx].remoteID = nil
+            }
         }
     }
 

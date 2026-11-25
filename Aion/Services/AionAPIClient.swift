@@ -229,11 +229,29 @@ actor AionAPIClient {
             if http.statusCode == 401 {
                 throw AionAPIError.unauthorized
             }
-            if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let msg = (dict["message"] as? String) ?? (dict["error"] as? String) {
-                throw AionAPIError.serverError(http.statusCode, msg)
+            if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                var parts: [String] = []
+                if let code = dict["code"] as? String, !code.isEmpty {
+                    parts.append(code)
+                }
+                if let msg = dict["message"] as? String, !msg.isEmpty {
+                    parts.append(msg)
+                }
+                if let errStr = dict["error"] as? String, !errStr.isEmpty, !parts.contains(errStr) {
+                    parts.append(errStr)
+                } else if let errObj = dict["error"] as? [String: Any] {
+                    if let errCode = errObj["code"] as? String { parts.append(errCode) }
+                    if let errMsg = (errObj["message"] as? String) ?? (errObj["detail"] as? String) ?? (errObj["raw"] as? String) {
+                        parts.append(errMsg)
+                    }
+                }
+                if let detail = (dict["detail"] as? String) ?? (dict["details"] as? String), !detail.isEmpty {
+                    parts.append(detail)
+                }
+                let joined = parts.isEmpty ? String(text.prefix(240)) : parts.joined(separator: " · ")
+                throw AionAPIError.serverError(http.statusCode, "[\(upper) \(path)] \(joined)")
             }
-            throw AionAPIError.serverError(http.statusCode, String(text.prefix(200)))
+            throw AionAPIError.serverError(http.statusCode, "[\(upper) \(path)] \(String(text.prefix(240)))")
         }
 
         guard !data.isEmpty else { return [String: Any]() }
@@ -483,21 +501,35 @@ actor AionAPIClient {
         locale: String = "en-US",
         config: AionServerConfig
     ) async throws -> AionConversation {
+        let extra: [String: Any] = [
+            "workspace": "",
+            "custom_workspace": false,
+            "default_files": [String](),
+            "selected_mcp_server_ids": [String](),
+            "selected_session_mcp_servers": [[String: Any]]()
+        ]
+
         var body: [String: Any] = [
             "name": name,
-            "extra": [String: Any]()
+            "extra": extra
         ]
 
         if let assistant {
-            // AionUi Rust/Axum API requires `assistant` as an object: { id, locale, conversation_overrides }
+            // Check exact assistant detail if backend is generic so we know whether `aionrs` needs `model`
+            var resolvedBackend = assistant.backend.lowercased()
+            if resolvedBackend == "aion" || resolvedBackend.isEmpty {
+                if let detail = try? await fetchAssistantDetail(id: assistant.id, locale: locale, config: config) {
+                    resolvedBackend = detail.lowercased()
+                }
+            }
+
             body["assistant"] = [
                 "id": assistant.id,
-                "locale": locale,
-                "conversation_overrides": [String: Any]()
+                "locale": locale
             ]
 
-            // For aionrs (Aion CLI) assistants, attach a configured provider model if available
-            if assistant.backend.lowercased() == "aionrs",
+            // For aionrs (Aion CLI) assistants, attach a configured provider model just like the Web client
+            if resolvedBackend == "aionrs",
                let provider = fallbackProvider,
                let firstModel = provider.models.first {
                 body["model"] = [
@@ -522,12 +554,23 @@ actor AionAPIClient {
         throw AionAPIError.decodingFailed
     }
 
+    private func fetchAssistantDetail(id: String, locale: String, config: AionServerConfig) async throws -> String? {
+        let encID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let encLoc = locale.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? locale
+        let raw = try await requestJSON(method: "GET", path: "/api/assistants/\(encID)?locale=\(encLoc)", config: config)
+        guard let dict = raw as? [String: Any] else { return nil }
+        let engine = dict["engine"] as? [String: Any]
+        return (engine?["agent_id"] as? String)
+            ?? (dict["agent_id"] as? String)
+            ?? (dict["backend"] as? String)
+    }
+
     func ensureRuntime(remoteID: String, config: AionServerConfig) async {
         let encoded = remoteID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? remoteID
         _ = try? await requestJSON(
             method: "POST",
             path: "/api/conversations/\(encoded)/runtime/ensure",
-            body: [String: Any](),
+            body: nil,
             config: config
         )
     }
@@ -545,10 +588,10 @@ actor AionAPIClient {
         config: AionServerConfig
     ) async throws {
         let encoded = remoteID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? remoteID
-        var body: [String: Any] = ["content": content]
-        if !files.isEmpty {
-            body["files"] = files
-        }
+        var body: [String: Any] = [
+            "content": content,
+            "files": files
+        ]
         if !injectSkills.isEmpty {
             body["inject_skills"] = injectSkills
         }
@@ -575,7 +618,10 @@ actor AionAPIClient {
             guard let id = item["id"] as? String else { return nil }
             let name = (item["name"] as? String) ?? id
             let description = (item["description"] as? String) ?? ""
+            let engine = item["engine"] as? [String: Any]
             let backend = (item["agent_id"] as? String)
+                ?? (engine?["agent_id"] as? String)
+                ?? (item["presetAgentType"] as? String)
                 ?? (item["backend"] as? String)
                 ?? (item["agent"] as? String)
                 ?? "aion"
