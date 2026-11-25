@@ -54,6 +54,11 @@ struct MainTabContainerView: View {
             .navigationDestination(for: UUID.self) { conversationID in
                 FluidChatView(store: store, conversationID: conversationID)
             }
+            .sheet(isPresented: $store.isLoginSheetPresented) {
+                LoginSheetView(store: store)
+                    .presentationCornerRadius(32)
+                    .interactiveDismissDisabled(store.serverConfig.mode == .aionWebUI && store.currentUser == nil)
+            }
             .fullScreenCover(isPresented: $store.isVoiceModePresented) {
                 VoiceModeView(store: store) { spokenPrompt in
                     store.isVoiceModePresented = false

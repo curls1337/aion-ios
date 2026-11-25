@@ -114,7 +114,7 @@ struct SettingsView: View {
                     styledField(
                         title: "Server URL",
                         placeholder: store.serverConfig.mode == .aionWebUI
-                            ? "http://100.x.x.x:25808 (LAN or Tailscale)"
+                            ? "https://aion.5nod.com"
                             : "https://api.openai.com/v1",
                         text: $store.serverConfig.baseURL
                     )
@@ -129,36 +129,60 @@ struct SettingsView: View {
                 }
             }
 
-            Button {
-                AionHaptics.medium()
-                isTestingConnection = true
-                Task {
-                    await store.refreshConnection()
-                    isTestingConnection = false
-                    if store.connectionState.isHealthy {
-                        AionHaptics.success()
-                    } else {
-                        AionHaptics.warning()
+            HStack(spacing: 10) {
+                Button {
+                    AionHaptics.medium()
+                    isTestingConnection = true
+                    Task {
+                        if store.serverConfig.mode == .aionWebUI && !store.serverConfig.password.isEmpty {
+                            await store.signIn(
+                                serverURL: store.serverConfig.baseURL,
+                                username: store.serverConfig.username,
+                                password: store.serverConfig.password
+                            )
+                        } else {
+                            await store.refreshConnection()
+                        }
+                        isTestingConnection = false
+                        if store.connectionState.isHealthy {
+                            AionHaptics.success()
+                        } else {
+                            AionHaptics.warning()
+                        }
                     }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if isTestingConnection {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "bolt.horizontal.fill")
+                } label: {
+                    HStack(spacing: 8) {
+                        if isTestingConnection {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "bolt.horizontal.fill")
+                        }
+                        Text(isTestingConnection ? "Connecting..." : (store.serverConfig.mode == .aionWebUI ? "Sign In & Sync" : "Test Connection"))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
                     }
-                    Text(isTestingConnection ? "Testing..." : "Test Connection")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(AionTheme.terracotta, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .background(AionTheme.terracotta, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .buttonStyle(AionSpringButtonStyle(scale: 0.97))
+
+                if store.serverConfig.mode == .aionWebUI && store.currentUser != nil {
+                    Button {
+                        Task { await store.signOut() }
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(AionTheme.terracotta)
+                            .frame(width: 48, height: 46)
+                            .background(AionTheme.bentoSand, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(AionSpringButtonStyle(scale: 0.95))
+                    .accessibilityLabel("Sign Out")
+                }
             }
-            .buttonStyle(AionSpringButtonStyle(scale: 0.97))
 
             if case .offline(let reason) = store.connectionState {
                 Text("Last error: \(reason)")

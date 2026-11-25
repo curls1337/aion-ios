@@ -66,7 +66,11 @@ struct BentoDashboardView: View {
             // Live API Status Pill (Liquid Glass capsule)
             Button {
                 AionHaptics.selection()
-                store.selectedTab = .settings
+                if store.connectionState == .needsLogin {
+                    store.isLoginSheetPresented = true
+                } else {
+                    store.selectedTab = .settings
+                }
             } label: {
                 HStack(spacing: 8) {
                     Circle()
@@ -77,6 +81,18 @@ struct BentoDashboardView: View {
                     Text(store.connectionState.badgeLabel)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(AionTheme.inkPrimary.opacity(0.88))
+
+                    if store.isWebSocketConnected {
+                        Text("WS")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(AionTheme.forest)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(AionTheme.bentoSage, in: Capsule())
+                    } else if store.isSyncingWorkspace {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
 
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .bold))
@@ -94,7 +110,7 @@ struct BentoDashboardView: View {
         switch store.connectionState {
         case .connected, .demo:
             return AionTheme.forest
-        case .connecting:
+        case .connecting, .needsLogin:
             return AionTheme.amber
         case .offline:
             return AionTheme.terracotta
@@ -122,7 +138,7 @@ struct BentoDashboardView: View {
                 icon: "bubble.left.fill",
                 iconTint: AionTheme.terracotta,
                 title: "New Chat",
-                subtitle: store.activeModel.displayName
+                subtitle: store.headerAssistantLabel
             ) {
                 AionHaptics.medium()
                 let convo = store.createNewConversation()

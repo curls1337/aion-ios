@@ -230,8 +230,9 @@ struct SkillsAndTasksView: View {
 
                         Button {
                             AionHaptics.medium()
-                            let convo = store.runCronTaskNow(task)
-                            onLaunchConversation(convo.id)
+                            if let convo = store.runCronTaskNow(task) {
+                                onLaunchConversation(convo.id)
+                            }
                         } label: {
                             Label("Run Now", systemImage: "bolt.fill")
                                 .font(.system(size: 12.5, weight: .semibold, design: .rounded))

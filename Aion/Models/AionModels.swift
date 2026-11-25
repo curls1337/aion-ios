@@ -29,6 +29,23 @@ enum AionTab: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// MARK: - Authenticated User & Assistants
+
+struct AionUser: Codable, Equatable, Sendable {
+    let id: String
+    let username: String
+    let role: String?
+}
+
+struct AionAssistant: Identifiable, Hashable, Codable, Sendable {
+    let id: String
+    let name: String
+    let description: String
+    let backend: String
+    let avatar: String?
+    let enabled: Bool
+}
+
 // MARK: - Models & Providers
 
 struct AionModelOption: Identifiable, Hashable, Codable, Sendable {
@@ -53,31 +70,46 @@ struct AionConversation: Identifiable, Codable, Hashable, Sendable {
     var title: String
     var iconName: String
     var modelID: String
+    var conversationType: String?
+    var assistantID: String?
     var updatedAt: Date
     var messages: [AionMessage]
+    var hasLoadedMessages: Bool
 
     init(
         id: UUID = UUID(),
         remoteID: String? = nil,
         title: String,
-        iconName: String = "doc.text.fill",
+        iconName: String = "bubble.left.fill",
         modelID: String = "aion-default",
+        conversationType: String? = nil,
+        assistantID: String? = nil,
         updatedAt: Date = Date(),
-        messages: [AionMessage] = []
+        messages: [AionMessage] = [],
+        hasLoadedMessages: Bool = true
     ) {
         self.id = id
         self.remoteID = remoteID
         self.title = title
         self.iconName = iconName
         self.modelID = modelID
+        self.conversationType = conversationType
+        self.assistantID = assistantID
         self.updatedAt = updatedAt
         self.messages = messages
+        self.hasLoadedMessages = hasLoadedMessages
     }
 
     var previewText: String {
-        messages.last?.content
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Start a new conversation"
+        if let last = messages.last(where: { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            return last.content
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let conversationType, !conversationType.isEmpty {
+            return "\(conversationType.uppercased()) · Tap to open"
+        }
+        return "Tap to open conversation"
     }
 }
 
@@ -89,8 +121,10 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
     }
 
     let id: UUID
+    var remoteMsgID: String?
     let role: Role
     var content: String
+    var thinking: String?
     let createdAt: Date
     var toolCalls: [AionToolCall]
     var summaryCard: AionSummaryCard?
@@ -99,8 +133,10 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
 
     init(
         id: UUID = UUID(),
+        remoteMsgID: String? = nil,
         role: Role,
         content: String,
+        thinking: String? = nil,
         createdAt: Date = Date(),
         toolCalls: [AionToolCall] = [],
         summaryCard: AionSummaryCard? = nil,
@@ -108,8 +144,10 @@ struct AionMessage: Identifiable, Codable, Hashable, Sendable {
         followUpSuggestions: [String] = []
     ) {
         self.id = id
+        self.remoteMsgID = remoteMsgID
         self.role = role
         self.content = content
+        self.thinking = thinking
         self.createdAt = createdAt
         self.toolCalls = toolCalls
         self.summaryCard = summaryCard
@@ -126,6 +164,7 @@ struct AionToolCall: Identifiable, Codable, Hashable, Sendable {
     }
 
     let id: UUID
+    var callID: String?
     let name: String
     var detail: String
     var status: Status
@@ -133,12 +172,14 @@ struct AionToolCall: Identifiable, Codable, Hashable, Sendable {
 
     init(
         id: UUID = UUID(),
+        callID: String? = nil,
         name: String,
         detail: String,
         status: Status = .completed,
         durationSeconds: Double? = nil
     ) {
         self.id = id
+        self.callID = callID
         self.name = name
         self.detail = detail
         self.status = status
@@ -157,12 +198,20 @@ struct AionAttachment: Identifiable, Codable, Hashable, Sendable {
     let fileName: String
     let mimeType: String
     let sizeLabel: String
+    var remotePath: String?
 
-    init(id: UUID = UUID(), fileName: String, mimeType: String = "application/octet-stream", sizeLabel: String = "124 KB") {
+    init(
+        id: UUID = UUID(),
+        fileName: String,
+        mimeType: String = "application/octet-stream",
+        sizeLabel: String = "124 KB",
+        remotePath: String? = nil
+    ) {
         self.id = id
         self.fileName = fileName
         self.mimeType = mimeType
         self.sizeLabel = sizeLabel
+        self.remotePath = remotePath
     }
 }
 
@@ -180,6 +229,7 @@ struct AionSkill: Identifiable, Codable, Hashable, Sendable {
 
 struct AionCronTask: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
+    var remoteJobID: String?
     var name: String
     var scheduleExpression: String
     var scheduleLabel: String
@@ -189,6 +239,7 @@ struct AionCronTask: Identifiable, Codable, Hashable, Sendable {
 
     init(
         id: UUID = UUID(),
+        remoteJobID: String? = nil,
         name: String,
         scheduleExpression: String,
         scheduleLabel: String,
@@ -197,6 +248,7 @@ struct AionCronTask: Identifiable, Codable, Hashable, Sendable {
         lastRunAt: Date? = nil
     ) {
         self.id = id
+        self.remoteJobID = remoteJobID
         self.name = name
         self.scheduleExpression = scheduleExpression
         self.scheduleLabel = scheduleLabel
@@ -206,30 +258,40 @@ struct AionCronTask: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - Search Hit
+
+struct AionSearchHit: Identifiable, Hashable, Sendable {
+    let id: String
+    let conversationRemoteID: String
+    let conversationTitle: String
+    let previewText: String
+    let createdAt: Date
+}
+
 // MARK: - Backend Connection Configuration
 
 enum AionBackendMode: String, CaseIterable, Identifiable, Codable, Sendable {
-    case demo = "Demo Mode"
-    case aionWebUI = "AionUi WebUI API"
-    case openAICompatible = "OpenAI-Compatible API"
+    case aionWebUI = "AionUi Remote"
+    case openAICompatible = "OpenAI API"
+    case demo = "Demo"
 
     var id: String { rawValue }
 
     var subtitle: String {
         switch self {
-        case .demo:
-            return "Instant offline preview with realistic streaming"
         case .aionWebUI:
-            return "Direct HTTP + WebSocket bridge to AionUi (:25808)"
+            return "Live AionUi REST + WebSocket (e.g. https://aion.5nod.com)"
         case .openAICompatible:
             return "Standard /v1/chat/completions SSE streaming"
+        case .demo:
+            return "Offline preview simulator (no server needed)"
         }
     }
 }
 
 struct AionServerConfig: Codable, Equatable, Sendable {
-    var mode: AionBackendMode = .demo
-    var baseURL: String = "http://127.0.0.1:25808"
+    var mode: AionBackendMode = .aionWebUI
+    var baseURL: String = "https://aion.5nod.com"
     var username: String = "admin"
     var password: String = ""
     var apiKey: String = ""
@@ -240,7 +302,7 @@ struct AionServerConfig: Codable, Equatable, Sendable {
         guard !trimmed.isEmpty else { return nil }
         let withScheme = trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")
             ? trimmed
-            : "http://\(trimmed)"
+            : "https://\(trimmed)"
         let cleaned = withScheme.hasSuffix("/") ? String(withScheme.dropLast()) : withScheme
         return URL(string: cleaned)
     }
@@ -258,17 +320,23 @@ struct AionServerConfig: Codable, Equatable, Sendable {
 
 enum AionConnectionState: Equatable, Sendable {
     case demo
+    case needsLogin
     case connecting
-    case connected(latencyMs: Int)
+    case connected(latencyMs: Int, username: String?)
     case offline(reason: String)
 
     var badgeLabel: String {
         switch self {
         case .demo:
-            return "Aion Demo Ready"
+            return "Demo Mode"
+        case .needsLogin:
+            return "Sign In Required"
         case .connecting:
             return "Connecting..."
-        case .connected(let latencyMs):
+        case .connected(let latencyMs, let username):
+            if let username, !username.isEmpty {
+                return "\(username) · \(latencyMs)ms"
+            }
             return "Aion API Online · \(latencyMs)ms"
         case .offline:
             return "API Offline"
@@ -279,13 +347,13 @@ enum AionConnectionState: Equatable, Sendable {
         switch self {
         case .demo, .connected:
             return true
-        case .connecting, .offline:
+        case .needsLogin, .connecting, .offline:
             return false
         }
     }
 }
 
-// MARK: - Seed / Demo Fixtures
+// MARK: - Demo Fixtures (Used only when Demo Mode is explicitly selected)
 
 enum AionFixtures {
     static let sampleSkills: [AionSkill] = [
@@ -315,33 +383,6 @@ enum AionFixtures {
             category: "Automation",
             samplePrompt: "Create a weekday 8:00 AM briefing of my pending tasks.",
             isEnabled: true
-        ),
-        AionSkill(
-            id: "conversation-create",
-            name: "Thread Spawner",
-            summary: "Spin up parallel isolated agent conversations for multi-track work.",
-            iconName: "bubble.left.and.exclamationmark.bubble.right.fill",
-            category: "Agents",
-            samplePrompt: "Start a dedicated workspace conversation for iOS release QA.",
-            isEnabled: true
-        ),
-        AionSkill(
-            id: "session-message",
-            name: "Cross-Session Sync",
-            summary: "Send context and handoffs between running Aion conversations.",
-            iconName: "arrow.triangle.2.circlepath.circle.fill",
-            category: "Agents",
-            samplePrompt: "Notify my backend agent that the mobile API schema is ready.",
-            isEnabled: true
-        ),
-        AionSkill(
-            id: "skill-creator",
-            name: "Skill Builder",
-            summary: "Author and validate new reusable Aion skills and workflows.",
-            iconName: "wand.and.stars",
-            category: "Developer",
-            samplePrompt: "Help me scaffold a custom skill for deployment checklists.",
-            isEnabled: true
         )
     ]
 
@@ -353,22 +394,6 @@ enum AionFixtures {
             prompt: "Compile overnight GitHub PRs, API health metrics, and top 3 priorities.",
             isActive: true,
             lastRunAt: Date().addingTimeInterval(-3600 * 5)
-        ),
-        AionCronTask(
-            name: "API Latency Watchdog",
-            scheduleExpression: "*/15 * * * *",
-            scheduleLabel: "Every 15 minutes",
-            prompt: "Verify Aion WebUI endpoint latency and alert if p95 exceeds 400ms.",
-            isActive: true,
-            lastRunAt: Date().addingTimeInterval(-60 * 12)
-        ),
-        AionCronTask(
-            name: "Weekly Product Recap",
-            scheduleExpression: "0 17 * * FRI",
-            scheduleLabel: "Fridays · 17:00",
-            prompt: "Summarize shipped iOS features and prepare changelog notes.",
-            isActive: true,
-            lastRunAt: Date().addingTimeInterval(-86400 * 3)
         )
     ]
 
@@ -400,50 +425,11 @@ enum AionFixtures {
                         title: "Executive Summary",
                         bullets: [
                             "Revenue grew 18% quarter over quarter",
-                            "API uptime reached 99.98% globally",
-                            "Mobile client latency dropped by 42%"
+                            "API uptime reached 99.98% globally"
                         ],
                         attachmentName: "report.docx"
                     ),
                     followUpSuggestions: ["Draft email", "Key risks", "Share"]
-                )
-            ]
-        ),
-        AionConversation(
-            title: "API Latency Review",
-            iconName: "bolt.horizontal.circle.fill",
-            modelID: "claude-sonnet-4",
-            updatedAt: Date().addingTimeInterval(-3600 * 3),
-            messages: [
-                AionMessage(
-                    role: .user,
-                    content: "How should the iOS app connect to AionUi over Tailscale?",
-                    createdAt: Date().addingTimeInterval(-3600 * 3 - 60)
-                ),
-                AionMessage(
-                    role: .assistant,
-                    content: "Start AionUi with WebUI remote mode enabled, then point the iOS client to your Tailscale MagicDNS or `100.x.x.x:25808` address.\n\n```bash\nAionUi --webui --remote\n```\n\nThe iOS app automatically negotiates JWT login and opens a persistent WebSocket stream with low-overhead heartbeats.",
-                    createdAt: Date().addingTimeInterval(-3600 * 3),
-                    followUpSuggestions: ["Test connection", "Security tips"]
-                )
-            ]
-        ),
-        AionConversation(
-            title: "Weekly Digest",
-            iconName: "calendar.badge.clock",
-            modelID: "gemini-2.5-pro",
-            updatedAt: Date().addingTimeInterval(-86400),
-            messages: [
-                AionMessage(
-                    role: .user,
-                    content: "Give me a quick recap of my active automations.",
-                    createdAt: Date().addingTimeInterval(-86400 - 45)
-                ),
-                AionMessage(
-                    role: .assistant,
-                    content: "All 3 scheduled cron workflows ran cleanly this week with zero retries. Your next scheduled briefing triggers tomorrow at 08:00.",
-                    createdAt: Date().addingTimeInterval(-86400),
-                    followUpSuggestions: ["Pause watchdog", "Add schedule"]
                 )
             ]
         )

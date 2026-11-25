@@ -32,6 +32,9 @@ struct FluidChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomComposerDock
         }
+        .task(id: conversationID) {
+            await store.loadMessagesIfNeeded(for: conversationID)
+        }
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -98,15 +101,31 @@ struct FluidChatView: View {
 
     private var modelPickerPill: some View {
         Menu {
-            ForEach(AionModelOption.defaults) { option in
-                Button {
-                    store.selectedModelID = option.id
-                    AionHaptics.selection()
-                } label: {
-                    Label(
-                        "\(option.displayName) · \(option.provider)",
-                        systemImage: store.selectedModelID == option.id ? "checkmark" : "sparkles"
-                    )
+            if store.serverConfig.mode == .aionWebUI && !store.assistants.isEmpty {
+                Section("Aion Assistants") {
+                    ForEach(store.assistants) { assistant in
+                        Button {
+                            store.selectedAssistantID = assistant.id
+                            AionHaptics.selection()
+                        } label: {
+                            Label(
+                                "\(assistant.name) · \(assistant.backend)",
+                                systemImage: store.selectedAssistant?.id == assistant.id ? "checkmark" : "sparkles"
+                            )
+                        }
+                    }
+                }
+            } else {
+                ForEach(AionModelOption.defaults) { option in
+                    Button {
+                        store.selectedModelID = option.id
+                        AionHaptics.selection()
+                    } label: {
+                        Label(
+                            "\(option.displayName) · \(option.provider)",
+                            systemImage: store.selectedModelID == option.id ? "checkmark" : "sparkles"
+                        )
+                    }
                 }
             }
         } label: {
@@ -118,9 +137,10 @@ struct FluidChatView: View {
                 Text("·")
                     .foregroundStyle(AionTheme.inkTertiary)
 
-                Text(store.activeModel.displayName)
+                Text(store.headerAssistantLabel)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AionTheme.inkSecondary)
+                    .lineLimit(1)
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .bold))
@@ -143,6 +163,16 @@ struct FluidChatView: View {
                             EditorialMessageRow(message: message, isStreaming: store.isStreaming && message.id == messages.last?.id)
                                 .id(message.id)
                         }
+                    } else if store.isLoadingMessages {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .tint(AionTheme.terracotta)
+                            Text("Loading conversation from Aion...")
+                                .font(.system(size: 14.5, weight: .medium))
+                                .foregroundStyle(AionTheme.inkSecondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
                     } else {
                         emptyThreadStarter
                     }
@@ -343,7 +373,7 @@ struct FluidChatView: View {
 
                         Button {
                             if store.isStreaming {
-                                store.stopStreaming()
+                                store.stopStreaming(in: conversationID)
                                 AionHaptics.light()
                             } else {
                                 sendCurrentInput()
@@ -422,6 +452,24 @@ private struct EditorialMessageRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
+                // Collapsible Thinking / Reasoning block
+                if let thinking = message.thinking, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    DisclosureGroup {
+                        Text(thinking)
+                            .font(.system(size: 13))
+                            .foregroundStyle(AionTheme.inkSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    } label: {
+                        Label("Reasoning", systemImage: "brain.head.profile")
+                            .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(AionTheme.inkSecondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(AionTheme.surfaceSecondary.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+
                 // Tool / Skill Execution Pills
                 if !message.toolCalls.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {

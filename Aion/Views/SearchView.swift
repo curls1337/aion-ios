@@ -44,6 +44,9 @@ struct SearchView: View {
                         .font(.system(size: 15.5))
                         .foregroundStyle(AionTheme.inkPrimary)
                         .autocorrectionDisabled()
+                        .onChange(of: query) { _, newValue in
+                            store.performRemoteSearch(keyword: newValue)
+                        }
 
                     if !query.isEmpty {
                         Button {
@@ -57,6 +60,61 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
                 .aionLiquidGlass(in: Capsule(), interactive: true, shadowRadius: 10)
+
+                // Remote Full-Text Message Hits from AionUi Server
+                if !store.remoteSearchHits.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Server Message Matches")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(AionTheme.inkSecondary)
+                            .padding(.leading, 4)
+
+                        ForEach(store.remoteSearchHits) { hit in
+                            Button {
+                                AionHaptics.selection()
+                                if let existing = store.conversation(forRemoteID: hit.conversationRemoteID) {
+                                    onOpenConversation(existing.id)
+                                } else {
+                                    let placeholder = AionConversation(
+                                        remoteID: hit.conversationRemoteID,
+                                        title: hit.conversationTitle,
+                                        updatedAt: hit.createdAt,
+                                        messages: [],
+                                        hasLoadedMessages: false
+                                    )
+                                    store.conversations.insert(placeholder, at: 0)
+                                    onOpenConversation(placeholder.id)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "text.magnifyingglass")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(AionTheme.forest)
+                                        .frame(width: 38, height: 38)
+                                        .background(AionTheme.bentoSage, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(hit.conversationTitle)
+                                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(AionTheme.inkPrimary)
+                                            .lineLimit(1)
+                                        Text(hit.previewText)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(AionTheme.inkSecondary)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(AionTheme.inkTertiary)
+                                }
+                                .padding(14)
+                                .aionBentoCard(fill: AionTheme.surface, cornerRadius: 18)
+                            }
+                            .buttonStyle(AionSpringButtonStyle(scale: 0.985))
+                        }
+                    }
+                }
 
                 // Matching Skills
                 if !matchingSkills.isEmpty {
